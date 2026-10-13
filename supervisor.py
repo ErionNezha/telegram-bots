@@ -1,12 +1,23 @@
 # Created by Erion Nezha — © 2026 All rights reserved
-"""Supervisor për 3 botët Telegram në Render (një Web Service falas).
+"""Server i vetëm për 3 botët Telegram në Render (një proces, plan falas).
 
-- Ndez një HTTP server minimal në $PORT (Render e kërkon për Web Service;
-  shërben edhe për UptimeRobot/cron-job.org që e mbajnë zgjuar).
-- Ndez 3 botët si nënprocese dhe i rindez automatikisht nëse dalin.
-- Token-at vijnë nga env vars e Render (kurrë në kod).
+Arkitektura (v2, 2026-10-13):
+- NJË proces Python mban të 3 botët si Application-e PTB. (v1 kishte
+  supervisor + 3 nënprocese; memoria kalonte limitin 512MB → OOM loop.)
+- HTTP server (stdlib, threading) në $PORT:
+  * GET  /         → health ("ok - telegram bots running")
+  * POST /wh/<bot> → webhook i Telegram-it për atë bot (secret i detyrueshëm)
+- Secili bot regjistron webhook-un e vet te Telegram në nisje; Telegram e
+  zgjon vetë shërbimin kur vjen mesazh — pa keepalive, pa polling.
+- Nëse WEBHOOK_SECRET mungon (zhvillim lokal), botët kalojnë në polling
+  brenda të njëjtit proces.
+- Postimi ditor i "librit të ditës" në kanalin @lexolibra (09:41, Tiranë)
+  mbetet thread më vete si më parë (post_channel.py si nënproces i shkurtër).
 """
+import asyncio
 import http.server
+import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -14,13 +25,22 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 
+from telegram import Update
+
 BASE = os.path.dirname(os.path.abspath(__file__))
+SECRET = os.environ.get("WEBHOOK_SECRET", "").strip()
+BASE_URL = os.environ.get(
+    "RENDER_EXTERNAL_URL", "https://telegram-bots-dc9n.onrender.com"
+).rstrip("/")
 
 BOTS = [
     ("lexolibra", os.path.join(BASE, "bots", "lexolibra", "bot.py")),
     ("dertli", os.path.join(BASE, "bots", "dertli", "bot.py")),
     ("support", os.path.join(BASE, "bots", "support", "bot.py")),
 ]
+ROUTES = {f"/wh/{name}": name for name, _ in BOTS}
+APPS = {}
+LOOP = None
 
 # Postimi ditor i "librit të ditës" në kanalin @lexolibra (ora e Tiranës).
 POST_SCRIPT = os.path.join(BASE, "bots", "lexolibra", "post_channel.py")
@@ -42,34 +62,6 @@ def _tirana_now():
         except Exception:
             pass
     return now_utc + timedelta(hours=2)  # fallback: CEST
-
-
-class HealthHandler(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-Type", "text/plain")
-        self.end_headers()
-        self.wfile.write(b"ok - telegram bots running")
-
-    def log_message(self, *args):
-        pass
-
-
-def serve_health():
-    port = int(os.environ.get("PORT", "10000"))
-    srv = http.server.HTTPServer(("0.0.0.0", port), HealthHandler)
-    print(f"[supervisor] health server në portin {port}", flush=True)
-    srv.serve_forever()
-
-
-def run_forever(name, script):
-    while True:
-        print(f"[supervisor] ndezja e botit '{name}'...", flush=True)
-        proc = subprocess.Popen([sys.executable, script])
-        proc.wait()
-        print(f"[supervisor] boti '{name}' doli me kodin {proc.returncode}; "
-              f"rindezje pas 5s...", flush=True)
-        time.sleep(5)
 
 
 def _last_posted_date():
@@ -122,20 +114,100 @@ def channel_post_loop():
         time.sleep(60)
 
 
+def load_app(name, path):
+    spec = importlib.util.spec_from_file_location(f"botmod_{name}", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.build_app()
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def _respond(self, code, body=b""):
+        self.send_response(code)
+        self.send_header("Content-Type", "text/plain")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        if body:
+            self.wfile.write(body)
+
+    def do_GET(self):
+        self._respond(200, b"ok - telegram bots running")
+
+    def do_POST(self):
+        name = ROUTES.get(self.path.split("?", 1)[0])
+        if name is None:
+            self._respond(404)
+            return
+        if not SECRET or \
+                self.headers.get("X-Telegram-Bot-Api-Secret-Token") != SECRET:
+            self._respond(403)
+            return
+        app = APPS.get(name)
+        if app is None or LOOP is None:
+            self._respond(503)
+            return
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        raw = self.rfile.read(length) if length > 0 else b""
+        try:
+            update = Update.de_json(json.loads(raw.decode("utf-8")), app.bot)
+        except Exception:
+            self._respond(400)
+            return
+        if update is None:
+            self._respond(400)
+            return
+        asyncio.run_coroutine_threadsafe(app.update_queue.put(update), LOOP)
+        self._respond(200)
+
+    def log_message(self, *args):
+        pass
+
+
+async def amain():
+    global LOOP
+    LOOP = asyncio.get_running_loop()
+    for name, path in BOTS:
+        app = load_app(name, path)
+        APPS[name] = app
+        await app.initialize()
+        if SECRET:
+            url = f"{BASE_URL}/wh/{name}"
+            for attempt in range(40):
+                try:
+                    await app.bot.set_webhook(
+                        url=url, secret_token=SECRET,
+                        allowed_updates=Update.ALL_TYPES)
+                    print(f"[server] webhook u regjistrua për '{name}': {url}",
+                          flush=True)
+                    break
+                except Exception as e:
+                    print(f"[server] set_webhook '{name}' dështoi "
+                          f"({attempt + 1}/40): {e}", flush=True)
+                    await asyncio.sleep(15)
+            else:
+                raise RuntimeError(f"set_webhook dështoi për '{name}'")
+        else:
+            await app.updater.start_polling(poll_interval=2.0)
+            print(f"[server] '{name}' në polling (pa WEBHOOK_SECRET)",
+                  flush=True)
+        await app.start()
+        print(f"[server] boti '{name}' gati", flush=True)
+    port = int(os.environ.get("PORT", "10000"))
+    srv = http.server.ThreadingHTTPServer(("0.0.0.0", port), Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    print(f"[server] HTTP server në portin {port}", flush=True)
+    await asyncio.Event().wait()
+
+
 def main():
-    threading.Thread(target=serve_health, daemon=True).start()
-    threads = []
-    for name, script in BOTS:
-        t = threading.Thread(target=run_forever, args=(name, script),
-                             daemon=True)
-        t.start()
-        threads.append(t)
-    t = threading.Thread(target=channel_post_loop, daemon=True,
-                         name="channel-post")
-    t.start()
-    threads.append(t)
-    for t in threads:
-        t.join()
+    threading.Thread(target=channel_post_loop, daemon=True,
+                     name="channel-post").start()
+    asyncio.run(amain())
 
 
 if __name__ == "__main__":

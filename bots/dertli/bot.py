@@ -224,7 +224,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(reply[i:i + 4000])
 
 
-def main():
+def build_app():
     if not TOKEN:
         raise SystemExit("Mungon DERTLI_TG_TOKEN — vendose si variabël ambienti.")
     req = HTTPXRequest(connect_timeout=25.0, read_timeout=40.0,
@@ -237,6 +237,13 @@ def main():
     app.add_handler(CommandHandler("pastro", cmd_clear))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
     log.info("Dertli Bot (Telegram) u ndez.")
+    return app
+
+
+def main():
+    # Përdorim i pavarur (zhvillim lokal): polling si më parë.
+    # Në Render përdoret serveri i vetëm webhook (supervisor.py).
+    app = build_app()
     app.run_polling(bootstrap_retries=100, poll_interval=2.0)
 
 

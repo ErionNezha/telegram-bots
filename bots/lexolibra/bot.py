@@ -519,7 +519,7 @@ async def on_inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.inline_query.answer(results, cache_time=300)
 
 
-def main():
+def build_app():
     if not TOKEN:
         raise SystemExit("Mungon TELEGRAM_TOKEN — vendose si variabël ambienti.")
     # Timeout-e të gjera: lidhja kalon përmes proxy-t të daljes që është e ngadaltë
@@ -543,8 +543,13 @@ def main():
     app.add_handler(InlineQueryHandler(on_inline_query))
 
     log.info("Lexo Libra bot u ndez — %d libra në katalog.", len(BOOKS))
-    # bootstrap_retries: proxy-ja e daljes i këput lidhjet herë pas here,
-    # prandaj lejojmë shumë riprovime në fazën e nisjes.
+    return app
+
+
+def main():
+    # Përdorim i pavarur (zhvillim lokal): polling si më parë.
+    # Në Render përdoret serveri i vetëm webhook (supervisor.py).
+    app = build_app()
     app.run_polling(bootstrap_retries=100, poll_interval=2.0)
 
 

@@ -222,7 +222,7 @@ async def on_menu_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
-def main():
+def build_app():
     if not TOKEN:
         raise SystemExit("Mungon SUPPORT_BOT_TOKEN — vendose si variabël ambienti.")
     req = HTTPXRequest(connect_timeout=25.0, read_timeout=40.0,
@@ -250,6 +250,13 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_menu_text))
 
     log.info("Lexo Libra Support Bot u ndez.")
+    return app
+
+
+def main():
+    # Përdorim i pavarur (zhvillim lokal): polling si më parë.
+    # Në Render përdoret serveri i vetëm webhook (supervisor.py).
+    app = build_app()
     app.run_polling(bootstrap_retries=100, poll_interval=2.0)
 
 
