@@ -1,9 +1,10 @@
 # Created by Erion Nezha — © 2026 All rights reserved
-"""Server i vetëm për 3 botët Telegram në Render (një proces, plan falas).
+"""Server i vetëm për botët Dertli + Support në Render (një proces, falas).
 
 Arkitektura (v2, 2026-10-13):
-- NJË proces Python mban të 3 botët si Application-e PTB. (v1 kishte
-  supervisor + 3 nënprocese; memoria kalonte limitin 512MB → OOM loop.)
+- NJË proces Python mban botët si Application-e PTB. (v1 kishte
+  supervisor + nënprocese; memoria kalonte limitin 512MB → OOM loop.)
+- @lexolibra_bot shërbehet nga shërbimi i vet lexolibra-bot (wbot.py).
 - HTTP server (stdlib, threading) në $PORT:
   * GET  /         → health ("ok - telegram bots running")
   * POST /wh/<bot> → webhook i Telegram-it për atë bot (secret i detyrueshëm)
@@ -33,8 +34,10 @@ BASE_URL = os.environ.get(
     "RENDER_EXTERNAL_URL", "https://telegram-bots-dc9n.onrender.com"
 ).rstrip("/")
 
+# SHËNIM: @lexolibra_bot NUK shërbehet këtu — ai ka shërbimin e vet
+# (lexolibra-bot, wbot.py) me webhook + veçoritë e plota (klubi i leximit).
+# Dy shërbime mbi të njëjtin token luftojnë për webhook/getUpdates.
 BOTS = [
-    ("lexolibra", os.path.join(BASE, "bots", "lexolibra", "bot.py")),
     ("dertli", os.path.join(BASE, "bots", "dertli", "bot.py")),
     ("support", os.path.join(BASE, "bots", "support", "bot.py")),
 ]
