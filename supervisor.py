@@ -28,6 +28,27 @@ from datetime import datetime, timedelta, timezone
 
 from telegram import Update
 
+
+def _load_dotenv():
+    """Botkeep i ruan variablat në file-in .env (rrënja e projektit), jo në env të procesit.
+
+    Ngarkohen me setdefault: env-i real (p.sh. Render) ka gjithmonë përparësi.
+    """
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                os.environ.setdefault(key.strip(), value.strip().strip("\"'"))
+    except OSError:
+        pass
+
+
+_load_dotenv()
+
 BASE = os.path.dirname(os.path.abspath(__file__))
 SECRET = os.environ.get("WEBHOOK_SECRET", "").strip()
 BASE_URL = (
