@@ -30,8 +30,10 @@ from telegram import Update
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 SECRET = os.environ.get("WEBHOOK_SECRET", "").strip()
-BASE_URL = os.environ.get(
-    "RENDER_EXTERNAL_URL", "https://telegram-bots-dc9n.onrender.com"
+BASE_URL = (
+    os.environ.get("PUBLIC_BASE_URL")
+    or os.environ.get("RENDER_EXTERNAL_URL")
+    or "https://telegram-bots-dc9n.onrender.com"
 ).rstrip("/")
 
 # SHËNIM: @lexolibra_bot NUK shërbehet këtu — ai ka shërbimin e vet
@@ -200,7 +202,7 @@ async def amain():
                   flush=True)
         await app.start()
         print(f"[server] boti '{name}' gati", flush=True)
-    port = int(os.environ.get("PORT", "10000"))
+    port = int(os.environ.get("PORT") or os.environ.get("SERVER_PORT") or "10000")
     srv = http.server.ThreadingHTTPServer(("0.0.0.0", port), Handler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     print(f"[server] HTTP server në portin {port}", flush=True)
