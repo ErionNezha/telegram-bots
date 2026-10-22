@@ -46,8 +46,18 @@ Struktura e data.json:
                                 "project_id": str, "stars": int (1-5,
                                 vetëm intern), "text": str,
                                 "status": "pending"|"approved"|"rejected",
-                                "created_at": iso} }
+                                "created_at": iso} },
+  "agreements": { "<agr_id>": {"client_id": int,
+                               "project_id": str|None, "title": str,
+                               "status": "pending"|"accepted"|"declined",
+                               "sent_at": iso, "decided_at": iso|None} }
 }
+settings ka edhe (paketa 3): "work_start"/"work_end" ("HH:MM", orari i
+punës për përgjigjen automatike jashtë orarit; default 09:00–18:00),
+"work_weekend" (bool, default False — e shtuna/e diela jashtë orarit)
+dhe "after_hours_notices" { "<user_id>": "YYYY-MM-DD" } — data lokale
+(Europe/Tirane) e njoftimit të fundit "jashtë orarit" për klientin
+(maksimumi një njoftim në ditë kalendarike për klient).
 Klienti ka edhe fushën "lang" ("sq"|"en", default "sq") — gjuha e
 ndërfaqes; zgjedhja e vizitorit para aktivizimit ruhet te
 settings["langs"] dhe kalon në regjistrin e klientit në aktivizim.
@@ -130,14 +140,15 @@ class Store:
             if isinstance(d, dict):
                 for k in ("codes", "clients", "requests", "attempts", "relay",
                           "daily", "settings", "projects", "slots",
-                          "bookings", "reviews"):
+                          "bookings", "reviews", "agreements"):
                     d.setdefault(k, {})
                 return d
         except (OSError, ValueError):
             pass
         return {"codes": {}, "clients": {}, "requests": {}, "attempts": {},
                 "relay": {}, "daily": {}, "settings": {}, "projects": {},
-                "slots": {}, "bookings": {}, "reviews": {}}
+                "slots": {}, "bookings": {}, "reviews": {},
+                "agreements": {}}
 
     def _save(self):
         # pastro numëruesit ditorë më të vjetër se 2 ditë (mbahen të lehtë)
@@ -780,3 +791,92 @@ class Store:
             rec["expiry_reminded_for"] = rec.get("expires_at")
             self._save()
             return True
+
+    # ---------- marrëveshjet dixhitale (paketa 3, F5) ----------
+    def create_agreement(self, client_id: int, project_id, title: str,
+                         at: datetime = None):
+        """Krijon marrëveshje 'pending' për klientin. Maksimumi një
+        në pritje për klient — nëse ekziston një e tillë, kthen None."""
+        at = at or now_utc()
+        with self._lock:
+            for rec in self._data["agreements"].values():
+                if (rec.get("client_id") == int(client_id)
+                        and rec.get("status") == "pending"):
+                    return None
+            aid = secrets.token_hex(4)
+            while aid in self._data["agreements"]:
+                aid = secrets.token_hex(4)
+            rec = {"id": aid, "client_id": int(client_id),
+                   "project_id": project_id or None,
+                   "title": (title or "").strip(),
+                   "status": "pending", "sent_at": iso(at),
+                   "decided_at": None}
+            self._data["agreements"][aid] = rec
+            self._save()
+        return dict(rec)
+
+    def get_agreement(self, agr_id: str):
+        with self._lock:
+            rec = self._data["agreements"].get(agr_id)
+            return dict(rec) if rec else None
+
+    def pending_agreement_for(self, client_id: int):
+        """Marrëveshja në pritje e klientit (më e reja), ose None."""
+        with self._lock:
+            out = [dict(r) for r in self._data["agreements"].values()
+                   if r.get("client_id") == int(client_id)
+                   and r.get("status") == "pending"]
+        return out[-1] if out else None
+
+    def set_agreement_status(self, agr_id: str, status: str,
+                             at: datetime = None):
+        """Vendos vendimin (accepted/declined) + kohën e vendimit;
+        kthen regjistrin e përditësuar ose None."""
+        at = at or now_utc()
+        with self._lock:
+            rec = self._data["agreements"].get(agr_id)
+            if rec is None:
+                return None
+            rec["status"] = status
+            rec["decided_at"] = iso(at)
+            self._save()
+            return dict(rec)
+
+    # ---------- orari i punës + njoftimi jashtë orarit (paketa 3, F6) --
+    def get_work_settings(self) -> dict:
+        with self._lock:
+            s = self._data.get("settings") or {}
+            return {"start": s.get("work_start") or "09:00",
+                    "end": s.get("work_end") or "18:00",
+                    "weekend": bool(s.get("work_weekend"))}
+
+    def set_work_hours(self, start: str, end: str):
+        with self._lock:
+            st = self._data.setdefault("settings", {})
+            st["work_start"] = start
+            st["work_end"] = end
+            self._save()
+
+    def set_work_weekend(self, flag: bool):
+        with self._lock:
+            self._data.setdefault("settings", {})["work_weekend"] = bool(flag)
+            self._save()
+
+    def get_after_hours_day(self, user_id: int):
+        """Data (YYYY-MM-DD, ora e Tiranës) e njoftimit të fundit
+        'jashtë orarit' për klientin, ose None."""
+        with self._lock:
+            notices = (self._data.get("settings") or {}).get(
+                "after_hours_notices") or {}
+            return notices.get(str(user_id))
+
+    def set_after_hours_day(self, user_id: int, day: str):
+        with self._lock:
+            st = self._data.setdefault("settings", {})
+            notices = st.setdefault("after_hours_notices", {})
+            notices[str(user_id)] = day
+            # mbaj hartën të lehtë: max 300 hyrjet e fundit
+            if len(notices) > 300:
+                for k in list(notices)[:-300]:
+                    del notices[k]
+            self._save()

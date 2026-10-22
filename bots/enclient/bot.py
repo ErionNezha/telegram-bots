@@ -50,6 +50,16 @@ Komandat e adminit (vetëm ADMIN_ID):
   /vleresime                   (vlerësimet në pritje — publiko/refuzo)
   /mireseardhje                /hiq_mireseardhjen   (zëri i mirëseardhjes)
   /raport                      (raporti javor sipas kërkesës)
+  /marreveshje <user_id>       (paketa 3: marrëveshja dixhitale)
+  /orari <HH:MM-HH:MM>         (paketa 3: orari i punës)
+  /orari_fundjave on|off       (paketa 3: fundjava në orar pune)
+
+Paketa 3 (2026-10-22):
+  menu e thjeshtuar (kryesore + "☰ Më shumë"), galeria vizuale e
+  punëve (album me pamje reale nga assets/gallery/), butoni i Mini
+  Web App-it te faqja kryesore e klientit, marrëveshja dixhitale e
+  bashkëpunimit (pranim me buton + PDF për të dyja palët) dhe orari
+  i punës me përgjigje automatike jashtë orarit (maks. 1/ditë).
 
 Sekretet VETËM nga ambienti / .env (kurë në kod):
   CLIENT_BOT_TOKEN  — token-i nga @BotFather (i detyrueshëm)
@@ -60,6 +70,7 @@ import asyncio
 import io
 import logging
 import os
+import re
 import sys
 import urllib.parse
 from datetime import datetime, timedelta, timezone
@@ -90,9 +101,11 @@ if os.path.isfile(_envf):
 from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    InputMediaPhoto,
     ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
     Update,
+    WebAppInfo,
 )
 from telegram.ext import (
     Application,
@@ -223,6 +236,30 @@ CV_CAPTION = ("📄 CV-ja e Erion Nezhës — Software Developer\n"
 
 WELCOME_VOICE_PATH = os.path.join(BASE, "assets", "welcome.ogg")
 
+# ---------- paketa 3: galeria vizuale + Mini Web App ----------
+GALLERY_DIR = os.path.join(BASE, "assets", "gallery")
+# Rendi i qëndrueshëm i galerisë; file-t që mungojnë kapërcehen.
+GALLERY_ORDER = ["lexolibra", "cmimradar", "marketradar", "farmaciradar",
+                 "filmahd", "klikobli", "veltrix", "portfolio", "dertli",
+                 "radioshqip"]
+# Emrat shfaqës për caption-et e albumit (pa shifra).
+GALLERY_NAMES = {
+    "lexolibra": "📚 Lexo Libra — biblioteka dixhitale shqipe",
+    "cmimradar": "📉 ÇmimRadar — krahasuesi i çmimeve",
+    "marketradar": "🛒 MarketRadar — çmimet e supermarketeve",
+    "farmaciradar": "💊 FarmaciRadar — krahasuesi i farmacive",
+    "filmahd": "🎬 FilmaHD — katalog filmash e serialesh",
+    "klikobli": "🛍 KlikoBli — dyqani online",
+    "veltrix": "✨ VELTRIX — prezantim vizual kreativ",
+    "portfolio": "🌐 Portfolio — Erion Nezha",
+    "dertli": "💬 Dertli Bot — asistenti AI shqip",
+    "radioshqip": "🎵 Radio Shqip — radiot shqiptare live",
+}
+
+# Mini Web App-i (portali vizual) — GitHub Pages; vetëm përmbajtje
+# publike, pa të dhëna private (ato jetojnë në bisedën e botit).
+WEBAPP_URL = "https://erionnezha.github.io/client-portal-app/"
+
 CARD_PATH = os.path.join(BASE, "assets", "card.png")
 CARD_IMG_CAPTION = (
     "🎴 Kartvizita e Erion Nezhës — ruaje ose përcille te dikush që "
@@ -333,26 +370,40 @@ def fmt_slot(dt, lang: str = "sq") -> str:
 # dhe drejtohen nga dispatch-i i tekstit/callback-eve (pa ConversationHandler:
 # më e thjeshtë, pa paralajmërime PTB dhe plotësisht e testueshme lokalisht).
 
+# Paketa 3 (F4): menuja e klientit u THJESHTUA — katër veprimet
+# kryesore + "☰ Më shumë"; pjesa tjetër jeton në tastierën e dytë.
 CLIENT_KB = ReplyKeyboardMarkup(
     [["💼 Shërbimet", "🗂 Shembuj pune"],
-     ["📝 Nis një projekt", "🚧 Projekti im"],
-     ["💬 Fol me Erionin", "🗓 Rezervo konsultë"],
-     ["❓ FAQ", "📄 CV-ja ime"],
-     ["🎴 Kartvizita ime", "🔐 Aksesi im", "🌍 Gjuha"]],
+     ["🚧 Projekti im", "💬 Fol me Erionin"],
+     ["📝 Nis një projekt", "☰ Më shumë"]],
     resize_keyboard=True,
 )
 CLIENT_KB_EN = ReplyKeyboardMarkup(
     [["💼 Services", "🗂 Work samples"],
-     ["📝 Start a project", "🚧 My project"],
-     ["💬 Talk to Erion", "🗓 Book a consultation"],
-     ["❓ FAQ", "📄 My CV"],
-     ["🎴 My card", "🔐 My access", "🌍 Language"]],
+     ["🚧 My project", "💬 Talk to Erion"],
+     ["📝 Start a project", "☰ More"]],
+    resize_keyboard=True,
+)
+CLIENT_KB_MORE = ReplyKeyboardMarkup(
+    [["🗓 Rezervo konsultë", "❓ FAQ"],
+     ["📄 CV-ja ime", "🎴 Kartvizita ime"],
+     ["🔐 Aksesi im", "🌍 Gjuha"],
+     ["⬅ Mbrapa"]],
+    resize_keyboard=True,
+)
+CLIENT_KB_MORE_EN = ReplyKeyboardMarkup(
+    [["🗓 Book a consultation", "❓ FAQ"],
+     ["📄 My CV", "🎴 My card"],
+     ["🔐 My access", "🌍 Language"],
+     ["⬅ Back"]],
     resize_keyboard=True,
 )
 
 
-def client_kb(lang: str = "sq"):
-    """Tastiera e klientit sipas gjuhës së tij (F3)."""
+def client_kb(lang: str = "sq", more: bool = False):
+    """Tastiera e klientit sipas gjuhës (kryesore ose 'Më shumë')."""
+    if more:
+        return CLIENT_KB_MORE_EN if lang == "en" else CLIENT_KB_MORE
     return CLIENT_KB_EN if lang == "en" else CLIENT_KB
 
 
@@ -371,6 +422,8 @@ MENU_ROUTES = {
     "❓ FAQ": "faq",
     "📄 CV-ja ime": "cv", "📄 My CV": "cv",
     "🌍 Gjuha": "lang", "🌍 Language": "lang",
+    "☰ Më shumë": "more", "☰ More": "more",
+    "⬅ Mbrapa": "back_home", "⬅ Back": "back_home",
 }
 
 LOCK_TEXT = (
@@ -597,6 +650,32 @@ STR = {
         "ics_caption": "📅 Shtoje konsultën në kalendarin tënd me një prekje — hape këtë file nga telefoni yt.",
         "pdf_caption": "🧾 Propozimi paraprak i projektit tënd — përmbledhje pa angazhim. Oferta përfundimtare vjen pas diskutimit tonë.",
         "gcal_btn": "📅 Google Calendar",
+        # paketa 3: menu e thjeshtuar, galeria, web app, marrëveshja, orari
+        "menu_more": "☰ Më shumë",
+        "menu_back": "⬅ Mbrapa",
+        "works_gallery": "📸 Galeria",
+        "works_gallery_empty": "Galeria po përgatitet — së shpejti këtu do të shohësh pamje reale të punëve të mia.",
+        "home_webapp": "🖥 Portali vizual",
+        "home_webapp_text": "🖥 <b>Portali vizual</b>\nShërbimet, punët dhe faqja ime — në një pamje të vetme, pa dalë nga Telegrami:",
+        "agreement_subject_default": "shërbimet e rëna dakord",
+        "agreement_intro": "✍ <b>Marrëveshje bashkëpunimi</b>\n\nErioni të propozon një marrëveshje bashkëpunimi për «{title}».\n\nLexo kushtet më poshtë dhe, nëse je dakord, prek butonin e pranimit.",
+        "agreement_terms": (
+            "<b>Kushtet e bashkëpunimit</b>\n"
+            "• Objekti: puna e përshkruar në brief-in dhe propozimin tënd, e konfirmuar në bisedë.\n"
+            "• Ecuria: puna zhvillohet me faza dhe ecuria ndiqet te «Projekti im» në këtë portal.\n"
+            "• Pagesa: sipas kushteve të rëna dakord në bisedë mes nesh.\n"
+            "• Korrigjimet: korrigjimet e arsyeshme brenda fushës së rënë dakord janë të përfshira.\n"
+            "• Dorëzimi: sipas planit të projektit që ndiqet në portal.\n"
+            "• Pas dorëzimit: një periudhë mbështetjeje për rregullimin e defekteve, siç është rënë dakord.\n"
+            "• Komunikimi: të dyja palët komunikojnë përmes këtij portali."
+        ),
+        "agreement_accept": "✅ I pranoj kushtet",
+        "agreement_decline": "❌ Refuzoj",
+        "agreement_accepted_msg": "✅ <b>Marrëveshja u pranua.</b>\n\nDokumenti i marrëveshjes të vjen më poshtë — ruaje për vete. Faleminderit për besimin!",
+        "agreement_declined_msg": "Në rregull — marrëveshja nuk u pranua dhe Erioni u njoftua. Për çdo sqarim, shkruaj me 💬 <b>Fol me Erionin</b>.",
+        "agreement_done": "Kjo marrëveshje është vendosur tashmë.",
+        "agreement_pdf_caption": "✍ Marrëveshja jote e bashkëpunimit — e pranuar dixhitalisht në këtë portal.",
+        "after_hours": "Faleminderit për mesazhin — u mor dhe iu përcoll Erionit. Orari i tij i punës është gjatë ditëve të javës; përgjigjja vjen sapo të nisë orari i punës. Për gjëra urgjente, lëre mesazhin këtu — e sheh gjithçka me radhë.",
     },
     "en": {
         "lock_text": (
@@ -692,6 +771,32 @@ STR = {
         "ics_caption": "📅 Add the consultation to your calendar with one tap — open this file on your phone.",
         "pdf_caption": "🧾 The preliminary proposal for your project — a non-binding summary. The final offer follows our discussion.",
         "gcal_btn": "📅 Google Calendar",
+        # pack 3: simple menu, gallery, web app, agreement, work hours
+        "menu_more": "☰ More",
+        "menu_back": "⬅ Back",
+        "works_gallery": "📸 Gallery",
+        "works_gallery_empty": "The gallery is being prepared — soon you'll see real screenshots of my work here.",
+        "home_webapp": "🖥 Visual portal",
+        "home_webapp_text": "🖥 <b>Visual portal</b>\nMy services, work and page — in a single view, without leaving Telegram:",
+        "agreement_subject_default": "the agreed services",
+        "agreement_intro": "✍ <b>Cooperation agreement</b>\n\nErion proposes a cooperation agreement for “{title}”.\n\nPlease read the terms below and, if you agree, tap the acceptance button.",
+        "agreement_terms": (
+            "<b>Terms of cooperation</b>\n"
+            "• Scope: the work described in your brief and proposal, as confirmed in our conversation.\n"
+            "• Process: the work proceeds in phases and progress is tracked under “My project” in this portal.\n"
+            "• Payment: under the terms agreed between us in conversation.\n"
+            "• Revisions: reasonable revisions within the agreed scope are included.\n"
+            "• Delivery: according to the project plan tracked in the portal.\n"
+            "• After delivery: a support period for fixing defects, as agreed.\n"
+            "• Communication: both sides communicate through this portal."
+        ),
+        "agreement_accept": "✅ I accept the terms",
+        "agreement_decline": "❌ Decline",
+        "agreement_accepted_msg": "✅ <b>The agreement was accepted.</b>\n\nYour agreement document follows below — keep it for your records. Thank you for your trust!",
+        "agreement_declined_msg": "No problem — the agreement was not accepted and Erion has been notified. For any clarification, write via 💬 <b>Talk to Erion</b>.",
+        "agreement_done": "This agreement has already been decided.",
+        "agreement_pdf_caption": "✍ Your cooperation agreement — accepted digitally in this portal.",
+        "after_hours": "Thank you for your message — it was received and forwarded to Erion. His working hours are on weekdays; he'll reply as soon as working hours start. For anything urgent, leave your message here — he sees everything in order.",
     },
 }
 
@@ -817,6 +922,13 @@ async def show_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await msg.reply_text(
         t(lang, "welcome", name=name, status=store.get_status()),
         parse_mode="HTML", reply_markup=client_kb(lang))
+    if not is_admin(user):
+        # paketa 3 (F2): butoni i Mini Web App-it — vetëm te faqja
+        # kryesore e klientit (vizitori sheh vetëm derën, admini panelin)
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+            t(lang, "home_webapp"), web_app=WebAppInfo(url=WEBAPP_URL))]])
+        await msg.reply_text(t(lang, "home_webapp_text"), parse_mode="HTML",
+                             reply_markup=kb)
     if is_admin(user):
         await msg.reply_text(
             "🛠 <b>Panel admini</b>\n"
@@ -841,6 +953,14 @@ async def show_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/mireseardhje — vendos/ndryshon mesazhin zanor të mirëseardhjes "
             "(klientët e rinj e marrin automatikisht pas aktivizimit)\n"
             "/hiq_mireseardhjen — heq mesazhin zanor të mirëseardhjes\n"
+            "/marreveshje &lt;user_id&gt; — dërgo marrëveshjen dixhitale "
+            "të bashkëpunimit për projektin e fundit të klientit\n"
+            f"/orari &lt;HH:MM-HH:MM&gt; — orari i punës (aktual: "
+            f"{store.get_work_settings()['start']}–"
+            f"{store.get_work_settings()['end']}, fundjava "
+            f"{'e hapur' if store.get_work_settings()['weekend'] else 'e mbyllur'}); "
+            "jashtë tij klienti merr përgjigjen automatike\n"
+            "/orari_fundjave on|off — hap/mbyll fundjavën si orar pune\n"
             "/raport — raporti javor (këtë javë) + pikat në pritje",
             parse_mode="HTML")
 
@@ -1255,9 +1375,52 @@ async def service_detail_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def works_categories_kb(lang: str = "sq"):
     rows = [[InlineKeyboardButton(label, callback_data=f"works:{cid}")]
             for cid, label in work_categories_for(lang)]
+    rows.append([InlineKeyboardButton(t(lang, "works_gallery"),
+                                      callback_data="works:gallery")])
     rows.append([InlineKeyboardButton(t(lang, "reviews_btn"),
                                       callback_data="works:reviews")])
     return InlineKeyboardMarkup(rows)
+
+
+def gallery_files():
+    """File-t e galerisë që ekzistojnë realisht në disk, në rendin
+    e qëndrueshëm GALLERY_ORDER (mungesat kapërcehen në heshtje)."""
+    out = []
+    for key in GALLERY_ORDER:
+        path = os.path.join(GALLERY_DIR, key + ".jpg")
+        if os.path.isfile(path):
+            out.append((key, path))
+    return out
+
+
+async def _send_gallery(context, user_id: int, lang: str,
+                        reply_to_msg=None):
+    """Paketa 3 (F3): albumi vizual i punëve — NJË media group me
+    pamjet reale të sajteve (caption = emri shfaqës i projektit)."""
+    files = gallery_files()[:10]
+    if not files:
+        if reply_to_msg is not None:
+            await reply_to_msg.reply_text(t(lang, "works_gallery_empty"))
+        return
+    opened = []
+    try:
+        media = []
+        for key, path in files:
+            f = open(path, "rb")
+            opened.append(f)
+            media.append(InputMediaPhoto(
+                f, caption=GALLERY_NAMES.get(key, key)))
+        await context.bot.send_media_group(user_id, media=media)
+    except Exception as e:
+        log.warning("galeria s'u dërgua te %s: %s", user_id, e)
+        if reply_to_msg is not None:
+            await reply_to_msg.reply_text(t(lang, "works_gallery_empty"))
+    finally:
+        for f in opened:
+            try:
+                f.close()
+            except Exception:
+                pass
 
 
 def works_category_kb(cid, lang: str = "sq"):
@@ -1287,7 +1450,10 @@ async def works_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await q.answer()
     data = (q.data or "").split(":", 1)[1] if ":" in (q.data or "") else "cat"
-    if data == "reviews":
+    if data == "gallery":
+        await _send_gallery(context, q.from_user.id, lang,
+                            reply_to_msg=q.message)
+    elif data == "reviews":
         kb = InlineKeyboardMarkup([[InlineKeyboardButton(
             t(lang, "back"), callback_data="works:cat")]])
         await q.message.reply_text(reviews_text(lang), parse_mode="HTML",
@@ -1599,6 +1765,223 @@ def build_proposal_pdf(brief: dict, client_name: str, lang: str = "sq") -> bytes
     out += (b"trailer\n<< /Size 7 /Root 1 0 R >>\nstartxref\n"
             + str(xref_at).encode() + b"\n%%EOF")
     return bytes(out)
+
+
+# ================================================================
+# Paketa 3 (F5) — MARRËVESHJA DIXHITALE E BASHKËPUNIMIT
+# Admini: /marreveshje <user_id> → klienti merr kushtet me butonat
+# ✅/❌; pranimi regjistrohet (me datë/orë) dhe të dyja palët marrin
+# PDF-në e marrëveshjes (i njëjti ndërtues stdlib si propozimi).
+# ================================================================
+def _strip_tags(s: str) -> str:
+    return re.sub(r"<[^>]+>", "", s or "")
+
+
+def build_agreement_pdf(agr: dict, client_name: str, decided_local: str,
+                        lang: str = "sq") -> bytes:
+    """MARRËVESHJE BASHKËPUNIMI — një faqe A4 me të njëjtën estetikë
+    (sfond i zi, vija ari, Helvetica/WinAnsi) si propozimi paraprak.
+    Shifrat këtu janë TË DHËNA (id, data/ora e pranimit) — të lejuara."""
+    en = (lang == "en")
+    L = {
+        "title": "COOPERATION AGREEMENT" if en else "MARRËVESHJE BASHKËPUNIMI",
+        "parties": "Parties" if en else "Palët",
+        "provider": ("Service provider" if en else "Ofruesi i shërbimit"),
+        "client": "Client" if en else "Klienti",
+        "subject": "Subject" if en else "Objekti",
+        "terms_h": "Terms" if en else "Kushtet",
+        "accept_h": "Digital acceptance" if en else "Pranimi dixhital",
+        "accepted_by": "Accepted by" if en else "Pranuar nga",
+        "when": "Date and time" if en else "Data dhe ora",
+        "note": ("Accepted digitally inside the Telegram portal" if en
+                 else "Pranuar dixhitalisht brenda portalit Telegram"),
+    }
+    terms_plain = _strip_tags(t(lang, "agreement_terms"))
+    terms_lines = []
+    for para in terms_plain.splitlines():
+        para = para.strip()
+        if not para or para == _strip_tags("Kushtet e bashkëpunimit") \
+                or para == "Terms of cooperation":
+            continue
+        terms_lines.extend(_pdf_wrap(para, 92))
+    ops = []
+    ops.append(b"0 0 0 rg 0 0 595 842 re f")
+    ops.append(b"0.85 0.65 0.13 RG 3 w 40 786 m 555 786 l S")
+    y = [806.0]
+
+    def line(text, size=11, font=b"F1", color=b"1 1 1", dy=16, x=40):
+        text = " ".join((text or "").split())
+        ops.append(b"BT /" + font + b" " + str(size).encode() + b" Tf "
+                   + color + b" rg 1 0 0 1 " + str(x).encode() + b" "
+                   + f"{y[0]:.0f}".encode() + b" Tm (" +
+                   _pdf_escape_b(_pdf_bytes(text)) + b") Tj ET")
+        y[0] -= dy
+
+    gold, white = b"0.85 0.65 0.13", b"1 1 1"
+    line("ERION NEZHA - PRIVATE CLIENTS", 17, b"F2", gold, dy=30)
+    line(L["title"], 13, b"F2", white, dy=26)
+    ops.append(b"0.85 0.65 0.13 RG 1.5 w 40 " + f"{y[0] + 8:.0f}".encode()
+               + b" m 555 " + f"{y[0] + 8:.0f}".encode() + b" l S")
+    y[0] -= 14
+    line(L["parties"].upper(), 9.5, b"F2", gold, dy=13)
+    line(f"{L['provider']}: Erion Nezha", 11, b"F1", white, dy=15)
+    line(f"{L['client']}: {client_name or '—'}", 11, b"F1", white, dy=15)
+    y[0] -= 7
+    line(L["subject"].upper(), 9.5, b"F2", gold, dy=13)
+    for ln in _pdf_wrap(agr.get("title") or "—", 88)[:3]:
+        line(ln, 11, b"F1", white, dy=15)
+    y[0] -= 7
+    line(L["terms_h"].upper(), 9.5, b"F2", gold, dy=13)
+    for ln in terms_lines[:22]:
+        line(ln, 10, b"F1", white, dy=13.5)
+    y[0] -= 9
+    line(L["accept_h"].upper(), 9.5, b"F2", gold, dy=13)
+    line(f"{L['accepted_by']}: {client_name or '—'} "
+         f"(Telegram ID: {agr.get('client_id')})", 10.5, b"F1", white, dy=14)
+    line(f"{L['when']}: {decided_local}", 10.5, b"F1", white, dy=14)
+    line(L["note"], 10.5, b"F1", white, dy=14)
+    # footer-i (pozicion fiks, poshtë)
+    y[0] = 74.0
+    ops.append(b"0.85 0.65 0.13 RG 1.5 w 40 88 m 555 88 l S")
+    line("MR ERJONIXX", 11, b"F2", gold, dy=15)
+    stream = b"\n".join(ops)
+
+    def obj(n, body):
+        return str(n).encode() + b" 0 obj\n" + body + b"\nendobj\n"
+
+    objects = [
+        obj(1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        obj(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        obj(3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] "
+               b"/Resources << /Font << /F1 4 0 R /F2 5 0 R >> >> "
+               b"/Contents 6 0 R >>"),
+        obj(4, b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica "
+               b"/Encoding /WinAnsiEncoding >>"),
+        obj(5, b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold "
+               b"/Encoding /WinAnsiEncoding >>"),
+        obj(6, b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n"
+               + stream + b"\nendstream"),
+    ]
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for o in objects:
+        offsets.append(len(out))
+        out += o
+    xref_at = len(out)
+    out += b"xref\n0 7\n0000000000 65535 f \n"
+    for off in offsets:
+        out += f"{off:010d} 00000 n \n".encode()
+    out += (b"trailer\n<< /Size 7 /Root 1 0 R >>\nstartxref\n"
+            + str(xref_at).encode() + b"\n%%EOF")
+    return bytes(out)
+
+
+async def adm_agreement(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/marreveshje <user_id> — i dërgon klientit marrëveshjen dixhitale
+    për projektin e tij më të fundit (çdo status); pa projekt → objekti
+    i përgjithshëm i lokalizuar. Maks. një në pritje për klient."""
+    if not is_admin(update.effective_user):
+        return
+    uid, _ = _parse_uid_arg(context)
+    if uid is None:
+        await update.message.reply_text(
+            "Përdorimi: /marreveshje <user_id> — i dërgon klientit "
+            "marrëveshjen e bashkëpunimit për projektin e tij të fundit.")
+        return
+    rec = store.get_client_any(uid)
+    if not rec:
+        await update.message.reply_text("Ky user_id nuk u gjet te klientët.")
+        return
+    if store.pending_agreement_for(uid):
+        await update.message.reply_text(
+            "✍ Klienti ka tashmë një marrëveshje në pritje — prit "
+            "vendimin e tij para se të dërgosh tjetër.")
+        return
+    projects = store.list_projects(uid)
+    proj = projects[-1] if projects else None
+    lang_c = store.get_lang(uid)
+    title = (proj or {}).get("title") or t(lang_c,
+                                           "agreement_subject_default")
+    agr = store.create_agreement(uid, (proj or {}).get("id"), title)
+    if agr is None:  # garë e rrallë: sapo u krijua një tjetër
+        await update.message.reply_text(
+            "✍ Klienti ka tashmë një marrëveshje në pritje.")
+        return
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton(t(lang_c, "agreement_accept"),
+                             callback_data="agr:accept"),
+        InlineKeyboardButton(t(lang_c, "agreement_decline"),
+                             callback_data="agr:decline"),
+    ]])
+    text = (t(lang_c, "agreement_intro", title=title) + "\n\n"
+            + t(lang_c, "agreement_terms"))
+    try:
+        await context.bot.send_message(uid, text, parse_mode="HTML",
+                                       reply_markup=kb)
+    except Exception as e:
+        log.warning("marrëveshja s'u dërgua te %s: %s", uid, e)
+        await update.message.reply_text(
+            "⚠️ Marrëveshja u regjistrua, por dërgimi te klienti "
+            "dështoi (ndoshta s'e ka hapur botin).")
+        return
+    await update.message.reply_text(
+        f"✍ Marrëveshja iu dërgua <b>{rec.get('name') or 'klientit'}</b> "
+        f"(id {uid}) për «{title}». Do të njoftohesh kur të vendosë.",
+        parse_mode="HTML")
+
+
+async def agreement_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Vendimi i klientit mbi marrëveshjen (agr:accept / agr:decline).
+    Vetëm klienti i adresuar ka një marrëveshje në pritje nën emrin
+    e tij — të tjerët marrin shënimin 'e vendosur tashmë'."""
+    q = update.callback_query
+    user = q.from_user
+    lang = ulang(user)
+    agr = store.pending_agreement_for(user.id)
+    if not agr:
+        await q.answer(t(lang, "agreement_done"), show_alert=True)
+        return
+    await q.answer()
+    action = (q.data or "").split(":", 1)[1] if ":" in (q.data or "") else ""
+    rec = store.get_client_any(user.id) or {}
+    client_name = rec.get("name") or user.first_name or ""
+    if action == "decline":
+        store.set_agreement_status(agr["id"], "declined")
+        await q.message.reply_text(t(lang, "agreement_declined_msg"),
+                                   parse_mode="HTML")
+        await notify_admin(
+            context,
+            f"✍ <b>Marrëveshja u refuzua</b>\n\n"
+            f"👤 {client_name} (@{user.username or '—'}, id {user.id})\n"
+            f"📄 Objekti: «{agr.get('title') or '—'}»")
+        return
+    updated = store.set_agreement_status(agr["id"], "accepted")
+    decided_dt = parse_iso((updated or {}).get("decided_at"))
+    decided_local = (decided_dt.astimezone(TIRANA).strftime("%d.%m.%Y %H:%M")
+                      if decided_dt else "—")
+    await q.message.reply_text(t(lang, "agreement_accepted_msg"),
+                               parse_mode="HTML")
+    try:
+        pdf = build_agreement_pdf(updated or agr, client_name,
+                                  decided_local, lang)
+        caption = t(lang, "agreement_pdf_caption")
+        await context.bot.send_document(
+            user.id, document=io.BytesIO(pdf),
+            filename="marreveshje-bashkepunimi.pdf", caption=caption)
+        await context.bot.send_document(
+            ADMIN_ID, document=io.BytesIO(pdf),
+            filename="marreveshje-bashkepunimi.pdf",
+            caption=(f"✍ Marrëveshje e pranuar — {client_name} "
+                     f"(id {user.id}), objekti: «{agr.get('title') or '—'}», "
+                     f"pranuar më {decided_local}"))
+    except Exception as e:
+        log.warning("PDF-ja e marrëveshjes dështoi: %s", e)
+    await notify_admin(
+        context,
+        f"✍ <b>Marrëveshja u pranua</b>\n\n"
+        f"👤 {client_name} (@{user.username or '—'}, id {user.id})\n"
+        f"📄 Objekti: «{agr.get('title') or '—'}»\n"
+        f"🕒 Pranuar më: {decided_local}")
 
 
 async def brief_finish(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2649,6 +3032,7 @@ async def media_dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 message_id=msg.message_id)
             store.map_relay(copied.message_id, user.id)
             await msg.reply_text(t(lang, "talk_sent"))
+            await _maybe_after_hours(context, user, lang)
         except Exception as e:
             log.warning("kopjimi i medias së klientit dështoi: %s", e)
             await msg.reply_text(t(lang, "talk_send_fail"))
@@ -2719,6 +3103,15 @@ async def fallback_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if action == "lang":
         await show_lang_chooser(update, context)
         return
+    if action in ("more", "back_home"):
+        # paketa 3 (F4): ndërrimi kryesore <-> "Më shumë"
+        if not has_access(user):
+            await show_lock(update, context, t(lang, "lock_note_private"))
+            return
+        await update.message.reply_text(
+            t(lang, "menu_prompt"),
+            reply_markup=client_kb(lang, more=(action == "more")))
+        return
     if has_access(user):
         if context.user_data.get("talk"):
             sent = await context.bot.send_message(
@@ -2728,6 +3121,7 @@ async def fallback_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="HTML")
             store.map_relay(sent.message_id, user.id)
             await update.message.reply_text(t(lang, "talk_sent"))
+            await _maybe_after_hours(context, user, lang)
         else:
             await update.message.reply_text(
                 t(lang, "menu_prompt"), reply_markup=client_kb(lang))
@@ -2842,6 +3236,96 @@ async def adm_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"{store.get_status()}", parse_mode="HTML")
 
 
+# ================================================================
+# Paketa 3 (F6) — ORARI I PUNËS + PËRGJIGJJA AUTOMATIKE JASHTË ORARIT
+# Kur mesazhi i klientit përcillet jashtë orarit, klienti merr një
+# njoftim të sjellshëm — maksimumi një herë në ditë kalendarike
+# (ora e Tiranës) për klient.
+# ================================================================
+def is_work_time(at: datetime = None) -> bool:
+    """A është 'at' (parazgjedhje: tani, Europe/Tirane) brenda orarit
+    të punës? E hënë–e premte (fundjava vetëm nëse është hapur),
+    work_start <= ora < work_end."""
+    at = at or datetime.now(TIRANA)
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=TIRANA)
+    at = at.astimezone(TIRANA)
+    ws = store.get_work_settings()
+    if at.weekday() >= 5 and not ws.get("weekend"):
+        return False
+    return ws["start"] <= at.strftime("%H:%M") < ws["end"]
+
+
+async def _maybe_after_hours(context, user, lang: str):
+    """Pas përcjelljes së mesazhit të klientit: nëse jemi jashtë
+    orarit, dërgo njoftimin 'after_hours' (maks. 1/ditë për klient).
+    Dështimet kapen në heshtje — relay s'prishet kurrë prej tij."""
+    try:
+        if is_work_time():
+            return
+        today = datetime.now(TIRANA).date().isoformat()
+        if store.get_after_hours_day(user.id) == today:
+            return
+        store.set_after_hours_day(user.id, today)
+        await context.bot.send_message(
+            user.id, t(lang, "after_hours"), parse_mode="HTML")
+    except Exception as e:
+        log.warning("njoftimi jashtë orarit dështoi: %s", e)
+
+
+def _work_schedule_text() -> str:
+    ws = store.get_work_settings()
+    return (f"{ws['start']}–{ws['end']}, fundjava "
+            f"{'e hapur' if ws['weekend'] else 'e mbyllur'}")
+
+
+async def adm_work_hours(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/orari HH:MM-HH:MM — vendos orarin e punës (validim i plotë).
+    Pa argumente: tregon orarin aktual."""
+    if not is_admin(update.effective_user):
+        return
+    arg = " ".join(context.args or []).strip()
+    if not arg:
+        await update.message.reply_text(
+            "🕘 <b>Orari aktual i punës</b>: " + _work_schedule_text()
+            + "\n\nNdryshoje me /orari &lt;HH:MM-HH:MM&gt; "
+              "(p.sh. /orari 09:00-18:00).", parse_mode="HTML")
+        return
+    m = re.fullmatch(r"(\d{1,2}):(\d{2})-(\d{1,2}):(\d{2})", arg)
+    ok = False
+    if m:
+        h1, m1, h2, m2 = (int(x) for x in m.groups())
+        ok = (0 <= h1 <= 23 and 0 <= h2 <= 23 and 0 <= m1 <= 59
+              and 0 <= m2 <= 59 and (h1, m1) < (h2, m2))
+    if not ok:
+        await update.message.reply_text(
+            "⚠️ Format i gabuar. Përdor /orari <HH:MM-HH:MM> me orë të "
+            "vlefshme dhe fillimin para fundit (p.sh. /orari 09:00-18:00).")
+        return
+    store.set_work_hours(f"{h1:02d}:{m1:02d}", f"{h2:02d}:{m2:02d}")
+    await update.message.reply_text(
+        "🕘 <b>Orari i punës u përditësua</b>: " + _work_schedule_text()
+        + "\nJashtë këtij orari, klientët marrin përgjigjen automatike "
+          "(maksimumi një herë në ditë).", parse_mode="HTML")
+
+
+async def adm_work_weekend(update: Update,
+                           context: ContextTypes.DEFAULT_TYPE):
+    """/orari_fundjave on|off — e shtuna/e diela si ditë pune ose jo."""
+    if not is_admin(update.effective_user):
+        return
+    arg = (context.args or [""])[0].strip().lower()
+    if arg not in ("on", "off"):
+        await update.message.reply_text(
+            "Përdorimi: /orari_fundjave on|off — orari aktual: "
+            + _work_schedule_text())
+        return
+    store.set_work_weekend(arg == "on")
+    await update.message.reply_text(
+        "🕘 <b>Orari i punës</b>: " + _work_schedule_text(),
+        parse_mode="HTML")
+
+
 async def adm_revoke(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user):
         return
@@ -2912,6 +3396,9 @@ def build_app():
     app.add_handler(CommandHandler("mireseardhje", adm_voice_set))  # F5
     app.add_handler(CommandHandler("hiq_mireseardhjen", adm_voice_clear))
     app.add_handler(CommandHandler("raport", adm_report))           # F6
+    app.add_handler(CommandHandler("marreveshje", adm_agreement))   # paketa 3
+    app.add_handler(CommandHandler("orari", adm_work_hours))        # paketa 3
+    app.add_handler(CommandHandler("orari_fundjave", adm_work_weekend))
     # callback-et (secili me prefiksin e vet, pa konflikte)
     app.add_handler(CallbackQueryHandler(lang_cb, pattern=r"^lang:(sq|en)$"))
     app.add_handler(CallbackQueryHandler(gate_code_cb, pattern=r"^gate:code$"))
@@ -2932,6 +3419,7 @@ def build_app():
     app.add_handler(CallbackQueryHandler(book_service_cb, pattern=r"^booksvc:"))
     app.add_handler(CallbackQueryHandler(book_slot_cb, pattern=r"^bookslot:"))
     app.add_handler(CallbackQueryHandler(booking_decision_cb, pattern=r"^bookadm:(ok|no):[0-9a-f]+$"))
+    app.add_handler(CallbackQueryHandler(agreement_cb, pattern=r"^agr:(accept|decline)$"))
     # i gjithë teksti kalon nga dispatch-i qendror (rrjedha/menu/relay/kyçje)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, fallback_text))
     # mediat (foto/zë/dokumente...) kalojnë nga dispatch-i mediatik (F6)
