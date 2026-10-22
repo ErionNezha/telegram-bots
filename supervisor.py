@@ -63,6 +63,7 @@ BASE_URL = (
 BOTS = [
     ("dertli", os.path.join(BASE, "bots", "dertli", "bot.py")),
     ("support", os.path.join(BASE, "bots", "support", "bot.py")),
+    ("enclient", os.path.join(BASE, "bots", "enclient", "bot.py")),
 ]
 ROUTES = {f"/wh/{name}": name for name, _ in BOTS}
 APPS = {}
