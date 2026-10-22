@@ -15,13 +15,16 @@ Rrjedha:
   i vjen adminit me ✅/❌. Miratimi e aktivizon klientin drejtpërdrejt.
 - 3 kode të gabuara brenda 15 min → kyçje 60 min + njoftim te admini.
 
-Pas zhbllokimit (klient): shërbimet, shembuj pune, formulari i projektit
-(brief), bisedë direkte me Erionin (relay dykahësh), kartvizita, /akses.
+Pas zhbllokimit (klient): shërbimet, shembuj pune me kategori, FAQ,
+vlerësime, CV-ja si dokument, formulari i projektit (brief), bisedë
+direkte me Erionin (relay dykahësh), kartvizita, /akses. E GJITHA kjo
+mbetet në zonën private — vizitori i kyçur sheh vetëm ekranin e derës.
 
 Komandat e adminit (vetëm ADMIN_ID):
   /krijo_kod [ditë] [shënim]   /kodet   /klientet
   /revoko <user_id>            /zgjat <user_id> [ditë]   /panel
   /backup                      (vetëm admin; NUK është në menunë publike)
+  /statusi [teksti]            (statusi i disponueshmërisë për klientët)
 
 Sekretet VETËM nga ambienti / .env (kurë në kod):
   CLIENT_BOT_TOKEN  — token-i nga @BotFather (i detyrueshëm)
@@ -107,17 +110,81 @@ SERVICE_DETAILS = {
     "other": "✨ <b>Tjetër</b>\nKe një ide tjetër në mendje? Tregoje me formularin e projektit dhe e diskutojmë bashkë.",
 }
 
-BUDGETS = ["Nën 50 000 L", "50 000 – 150 000 L", "150 000 – 300 000 L",
-           "Mbi 300 000 L", "Ende nuk e di"]
+# Buxhetet: vetëm cilësore, PA shifra (urdhër i përdoruesit: "mos vendos shifra").
+BUDGETS = ["Modest", "Mesatar", "Serioz", "Ende nuk e di"]
 
-WORKS = [
-    ("📚 Lexo Libra — biblioteka dixhitale shqipe (736 libra)", "https://lexolibra.netlify.app"),
-    ("📉 ÇmimRadar — krahasuesi i çmimeve, 22 dyqane", "https://cmimradar.netlify.app"),
-    ("🛒 MarketRadar — çmimet e supermarketeve në Tiranë", "https://marketradar-tirana.netlify.app"),
-    ("💊 FarmaciRadar — krahasuesi i farmacive online", "https://farmaciradar.netlify.app"),
-    ("🌐 Portfolio e plotë e Erion Nezhës", "https://erionnezha.netlify.app"),
-    ("🎴 Kartvizita dixhitale 3D", "https://erionnezha.github.io/erionxx-business-card/"),
+# Shembujt e punës — me kategori (vetëm zonë private e klientit).
+WORK_CATEGORIES = [
+    ("apps", "📱 Aplikacione mobile"),
+    ("web", "🌐 Platforma web"),
+    ("ai", "🤖 Botë & AI"),
 ]
+WORKS = {
+    "apps": [
+        ("📺 ERION TV — aplikacioni IPTV", "https://play.google.com/store/apps/details?id=com.streamvision.app"),
+        ("📡 Dream TV AL — TV live e filma në telefon", "https://play.google.com/store/apps/details?id=blackmaster.ex"),
+        ("🎵 Radio Shqip — radiot shqiptare live", "https://play.google.com/store/apps/details?id=com.erionxx.radioshqip"),
+        ("📷 QR Code Scanner — skanim i shpejtë QR & barcode", "https://play.google.com/store/apps/details?id=com.erionxx.qrscanner"),
+        ("📶 Speedtest Pro — matja e shpejtësisë së internetit", "https://play.google.com/store/apps/details?id=com.erionxx.speedtestpro"),
+    ],
+    "web": [
+        ("📚 Lexo Libra — biblioteka dixhitale shqipe", "https://lexolibra.netlify.app"),
+        ("📉 ÇmimRadar — krahasuesi i çmimeve", "https://cmimradar.netlify.app"),
+        ("🛒 MarketRadar — çmimet e supermarketeve në Tiranë", "https://marketradar-tirana.netlify.app"),
+        ("💊 FarmaciRadar — krahasuesi i farmacive online", "https://farmaciradar.netlify.app"),
+        ("🎬 FilmaHD — katalog filmash e serialesh", "https://filma12hd.vercel.app"),
+        ("🛍 KlikoBli — dyqani online", "https://klikobli.netlify.app"),
+        ("✨ VELTRIX — prezantim vizual kreativ", "https://veltrix-visuals.netlify.app"),
+        ("🌐 Portfolio e plotë e Erion Nezhës", "https://erionnezha.netlify.app"),
+        ("🎴 Kartvizita dixhitale", "https://erionnezha.github.io/erionxx-business-card/"),
+    ],
+    "ai": [
+        ("💬 Dertli Bot — asistenti AI shqip", "https://dertlibot.netlify.app"),
+        ("🤖 JARVIS PC — asistenti zanor për kompjuterin", "https://github.com/ErionNezha/jarvis-pc"),
+    ],
+}
+WORKS_HEADER = "🗂 <b>Shembuj pune reale</b> — projekte të përfunduara dhe live.\nZgjidh një kategori:"
+
+# Vlerësime REALE (përmbledhje të ndershme, jo citate të sajuara):
+# dy vlerësime me yje maksimale në Google Play për ERION TV.
+# PA shifra (urdhri "mos vendos shifra") — as në atribucion.
+REVIEWS_TEXT = (
+    "⭐ <b>Vlerësime nga përdorues realë</b>\n\n"
+    "⭐⭐⭐⭐⭐\n"
+    "Dizajn shumë i pëlqyer dhe navigim i lehtë nëpër aplikacion.\n"
+    "<i>— vlerësim në Google Play (ERION TV)</i>\n\n"
+    "⭐⭐⭐⭐⭐\n"
+    "Kanale të shumta dhe funksionim i qëndrueshëm, pa ndërprerje.\n"
+    "<i>— vlerësim në Google Play (ERION TV)</i>"
+)
+
+# FAQ — TEPËR cilësore: PA asnjë shifër (urdhri "mos vendos shifra"):
+# jo %, jo shuma, jo afate me ditë/orë, jo premtime të numëruara.
+FAQ_TEXT = (
+    "❓ <b>Pyetje të shpeshta</b>\n\n"
+    "<b>Sa zgjat një projekt?</b>\n"
+    "Varet nga madhësia dhe funksionet që kërkon projekti. Pasi plotëson "
+    "brief-in, afati përcaktohet bashkë dhe fiksohet në marrëveshje para "
+    "se të nisë puna.\n\n"
+    "<b>Si bëhet pagesa?</b>\n"
+    "Pagesa bëhet me faza, sipas marrëveshjes: një parapagim për të nisur "
+    "punën dhe pjesa tjetër sipas ecurisë, deri në dorëzimin final.\n\n"
+    "<b>Çfarë duhet të jap unë si klient?</b>\n"
+    "Përgjigjet e brief-it dhe materialet e tua — logo, tekste, foto dhe "
+    "akseset e nevojshme. Për gjithçka tjetër kujdesem unë.\n\n"
+    "<b>A ka mbështetje dhe mirëmbajtje pas dorëzimit?</b>\n"
+    "Po — pas dorëzimit mbështetja është e përfshirë për çdo problem që "
+    "lind nga puna e dorëzuar. Nëse do qetësi afatgjatë, ka edhe paketa "
+    "mirëmbajtjeje opsionale.\n\n"
+    "<b>A mund të kërkoj korrigjime?</b>\n"
+    "Po — korrigjimet brenda fushës së rënë dakord janë të përfshira. "
+    "Ndryshimet më të mëdha, jashtë fushës fillestare, i diskutojmë "
+    "bashkë para se të bëhen."
+)
+
+CV_PATH = os.path.join(BASE, "assets", "CV-Erion-Nezha.pdf")
+CV_CAPTION = ("📄 CV-ja e Erion Nezhës — Software Developer\n"
+              "Përvojë, aftësi dhe projekte — në një dokument.")
 
 # Rrjedhat shumë-hapëshe mbahen në user_data["flow"] = {"kind": ..., "step": ...}
 # dhe drejtohen nga dispatch-i i tekstit/callback-eve (pa ConversationHandler:
@@ -126,7 +193,8 @@ WORKS = [
 CLIENT_KB = ReplyKeyboardMarkup(
     [["💼 Shërbimet", "🗂 Shembuj pune"],
      ["📝 Nis një projekt", "💬 Fol me Erionin"],
-     ["🎴 Kartvizita", "🔐 Aksesi im"]],
+     ["❓ FAQ", "🎴 Kartvizita ime"],
+     ["📄 CV-ja ime", "🔐 Aksesi im"]],
     resize_keyboard=True,
 )
 
@@ -166,20 +234,20 @@ REQ_PENDING_TEXT = (
 )
 REQ_DAILY_TEXT = (
     "⏳ <b>Ke arritur limitin ditor të kërkesave.</b>\n\n"
-    "Mund të dërgosh maksimumi 2 kërkesa për shërbim brenda një dite. "
-    "Provo sërish nesër — ose shkruaji Erionit në Instagram: @erjonixx"
+    "Kërkesat për shërbim kanë limit ditor. Provo sërish nesër — "
+    "ose shkruaji Erionit në Instagram: @erjonixx"
 )
 BRIEF_DAILY_TEXT = (
     "⏳ <b>Ke arritur limitin ditor të brief-eve.</b>\n\n"
-    "Mund të dërgosh maksimumi 3 brief-e projekti brenda një dite. "
-    "Brief-i i ri mund të niset nesër — për diçka urgjente përdor "
-    "💬 <b>Fol me Erionin</b>."
+    "Brief-et e projekteve kanë limit ditor. Brief-i i ri mund të "
+    "niset nesër — për diçka urgjente përdor 💬 <b>Fol me Erionin</b>."
 )
 
 WELCOME_CLIENT = (
     "✨ <b>Mirë se erdhe në portalin tënd privat, {name}.</b>\n\n"
     "Këtu gjen shërbimet, shembujt e punës dhe formularin për të nisur "
     "projektin tënd. Mesazhet e tua vijnë direkt tek unë.\n\n"
+    "{status}\n\n"
     "— <i>Erion Nezha</i>"
 )
 
@@ -225,8 +293,9 @@ async def show_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     name = (user.first_name or "klient").strip()
     msg = update.effective_message
-    await msg.reply_text(WELCOME_CLIENT.format(name=name), parse_mode="HTML",
-                         reply_markup=CLIENT_KB)
+    await msg.reply_text(
+        WELCOME_CLIENT.format(name=name, status=store.get_status()),
+        parse_mode="HTML", reply_markup=CLIENT_KB)
     if is_admin(user):
         await msg.reply_text(
             "🛠 <b>Panel admini</b>\n"
@@ -235,7 +304,8 @@ async def show_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/klientet — klientët aktivë\n"
             "/revoko &lt;user_id&gt; — hiq aksesin menjëherë\n"
             "/zgjat &lt;user_id&gt; [ditë] — zgjat aksesin (default 30)\n"
-            "/backup — merr kopjen aktuale të të dhënave (data.json)",
+            "/backup — merr kopjen aktuale të të dhënave (data.json)\n"
+            "/statusi [teksti] — statusi i disponueshmërisë që shohin klientët",
             parse_mode="HTML")
 
 
@@ -287,11 +357,11 @@ async def gate_code_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if store.is_locked(q.from_user.id):
         await q.message.reply_text(
             "⏳ Llogaria jote është e kyçur përkohësisht nga tentativat e "
-            "gabura. Provo pas 1 ore.")
+            "gabura. Provo më vonë.")
         return
     context.user_data["flow"] = {"kind": "code"}
     await q.message.reply_text(
-        "🔑 Shkruaj kodin tënd të aksesit (p.sh. <code>EN-7KX4-9210</code>):",
+        "🔑 Shkruaj kodin tënd të aksesit (formati: <code>EN-XXXX-XXXX</code>):",
         parse_mode="HTML")
 
 
@@ -299,7 +369,7 @@ async def try_redeem(update: Update, context: ContextTypes.DEFAULT_TYPE, code: s
     user = update.effective_user
     if store.is_locked(user.id):
         await update.effective_message.reply_text(
-            "⏳ Llogaria jote është e kyçur përkohësisht. Provo pas 1 ore.")
+            "⏳ Llogaria jote është e kyçur përkohësisht. Provo më vonë.")
         return
     status, rec = store.redeem_code(code, user.id)
     if status == "ok":
@@ -337,7 +407,7 @@ async def _gate_fail(update: Update, context: ContextTypes.DEFAULT_TYPE, status:
             "tregua vetëm mesazhi gjenerik.")
     if locked:
         await update.effective_message.reply_text(
-            "🔒 Shumë tentativa të gabuara — llogaria u kyç për 60 minuta.")
+            "🔒 Shumë tentativa të gabuara — llogaria u kyç për një orë.")
         last = store.last_fail_status(user.id) or status
         label = FAIL_STATUS_LABELS.get(last, last or "—")
         await notify_admin(
@@ -379,7 +449,7 @@ async def gate_req_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["flow"] = {"kind": "req", "step": "service"}
     context.user_data["req"] = {}
     await q.message.reply_text(
-        "📝 <b>Kërkesë për shërbim</b> — hapi 1/4\n\nÇfarë shërbimi kërkon?",
+        "📝 <b>Kërkesë për shërbim</b>\n\nÇfarë shërbimi kërkon?",
         parse_mode="HTML", reply_markup=service_kb("svc"))
 
 
@@ -393,7 +463,7 @@ async def req_service_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.setdefault("req", {})["service"] = SERVICE_NAMES.get(sid, sid)
     flow["step"] = "name"
     await q.message.reply_text(
-        "Hapi 2/4 — Si e ke <b>emrin</b> (emër mbiemër)?", parse_mode="HTML")
+        "Si e ke <b>emrin</b> (emër mbiemër)?", parse_mode="HTML")
 
 
 async def req_text_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -404,7 +474,7 @@ async def req_text_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["req"]["name"] = text
         flow["step"] = "desc"
         await update.message.reply_text(
-            "Hapi 3/4 — Përshkruaje shkurtimisht <b>çfarë të duhet</b>:",
+            "Përshkruaje shkurtimisht <b>çfarë të duhet</b>:",
             parse_mode="HTML")
     elif step == "desc":
         context.user_data["req"]["desc"] = text
@@ -412,7 +482,7 @@ async def req_text_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
         kb = InlineKeyboardMarkup([[InlineKeyboardButton(
             "⏭ Kapërce", callback_data="req:nocontact")]])
         await update.message.reply_text(
-            "Hapi 4/4 — Një <b>kontakt</b> ku mund të të shkruaj Erioni "
+            "Një <b>kontakt</b> ku mund të të shkruaj Erioni "
             "(numër telefoni ose email). Mund ta kapërcesh — biseda vazhdon këtu.",
             parse_mode="HTML", reply_markup=kb)
     elif step == "contact":
@@ -507,7 +577,8 @@ async def admin_decision_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             req["user_id"],
             "🎉 <b>Kërkesa jote u MIRATUA!</b>\n\n"
             f"Portali yt privat është aktiv deri më <b>{fmt_date(client['expires_at'])}</b>.\n\n"
-            + WELCOME_CLIENT.format(name=(req["name"] or "klient").split()[0]),
+            + WELCOME_CLIENT.format(name=(req["name"] or "klient").split()[0],
+                                    status=store.get_status()),
             parse_mode="HTML", reply_markup=CLIENT_KB)
     except Exception as e:
         log.warning("miratimi s'u dërgua: %s", e)
@@ -548,20 +619,83 @@ async def service_detail_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                reply_markup=kb)
 
 
+def works_categories_kb():
+    rows = [[InlineKeyboardButton(label, callback_data=f"works:{cid}")]
+            for cid, label in WORK_CATEGORIES]
+    rows.append([InlineKeyboardButton("⭐ Vlerësime", callback_data="works:reviews")])
+    return InlineKeyboardMarkup(rows)
+
+
+def works_category_kb(cid):
+    rows = [[InlineKeyboardButton(t, url=u)] for t, u in WORKS[cid]]
+    rows.append([InlineKeyboardButton("⬅ Kthehu", callback_data="works:cat")])
+    return InlineKeyboardMarkup(rows)
+
+
 async def show_works(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await guard_client(update):
         return
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton(t, url=u)] for t, u in WORKS])
     await update.effective_message.reply_text(
-        "🗂 <b>Shembuj pune reale</b> — projekte të përfunduara dhe live:",
-        parse_mode="HTML", reply_markup=kb)
+        WORKS_HEADER, parse_mode="HTML", reply_markup=works_categories_kb())
+
+
+async def works_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Callback-et e shembujve të punës: kategori / vlerësime / mbrapa.
+    Vetëm klientë të zhbllokuar — vizitori merr vetëm sinjalin e kyçjes."""
+    q = update.callback_query
+    if not has_access(q.from_user):
+        await q.answer("Aksesi është i kyçur.", show_alert=True)
+        return
+    await q.answer()
+    data = (q.data or "").split(":", 1)[1] if ":" in (q.data or "") else "cat"
+    if data == "reviews":
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+            "⬅ Kthehu", callback_data="works:cat")]])
+        await q.message.reply_text(REVIEWS_TEXT, parse_mode="HTML",
+                                   reply_markup=kb)
+    elif data in WORKS:
+        title = dict(WORK_CATEGORIES)[data]
+        await q.message.reply_text(
+            f"🗂 <b>{title}</b> — projekte live:",
+            parse_mode="HTML", reply_markup=works_category_kb(data))
+    else:  # "cat" → kthehu te kategoritë
+        await q.message.reply_text(
+            WORKS_HEADER, parse_mode="HTML", reply_markup=works_categories_kb())
+
+
+async def show_faq(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await guard_client(update):
+        return
+    await update.effective_message.reply_text(FAQ_TEXT, parse_mode="HTML")
+
+
+async def show_cv(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """📄 CV-ja ime: dërgon PDF-në e paketuar (assets/CV-Erion-Nezha.pdf).
+    Vetëm klientë — vizitori s'merr as dokumentin, as përmbajtjen."""
+    if not await guard_client(update):
+        return
+    if not os.path.isfile(CV_PATH):
+        await update.effective_message.reply_text(
+            "📄 CV-ja për momentin s'është e disponueshme këtu — kërkoja "
+            "Erionit me 💬 <b>Fol me Erionin</b>.", parse_mode="HTML")
+        return
+    try:
+        with open(CV_PATH, "rb") as f:
+            await context.bot.send_document(
+                update.effective_user.id, document=f,
+                filename="CV-Erion-Nezha.pdf", caption=CV_CAPTION)
+    except Exception as e:
+        log.warning("dërgimi i CV-së dështoi: %s", e)
+        await update.effective_message.reply_text(
+            "📄 CV-ja s'u dërgua dot tani — kërkoja Erionit me 💬 "
+            "<b>Fol me Erionin</b>.", parse_mode="HTML")
 
 
 async def show_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await guard_client(update):
         return
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🎴 Kartvizita 3D", url="https://erionnezha.github.io/erionxx-business-card/")],
+        [InlineKeyboardButton("🎴 Kartvizita dixhitale", url="https://erionnezha.github.io/erionxx-business-card/")],
         [InlineKeyboardButton("🌐 Portfolio", url="https://erionnezha.netlify.app")],
         [InlineKeyboardButton("💼 LinkedIn", url="https://www.linkedin.com/in/erion-nezha")],
         [InlineKeyboardButton("📸 Instagram", url="https://www.instagram.com/erjonixx/")],
@@ -605,7 +739,7 @@ async def brief_start_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["flow"] = {"kind": "brief", "step": "service"}
     context.user_data["brief"] = {}
     await q.message.reply_text(
-        "📝 <b>Projekt i ri</b> — hapi 1/5\n\nÇfarë lloj projekti është?",
+        "📝 <b>Projekt i ri</b>\n\nÇfarë lloj projekti është?",
         parse_mode="HTML", reply_markup=service_kb("briefsvc"))
 
 
@@ -618,7 +752,7 @@ async def brief_menu_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["flow"] = {"kind": "brief", "step": "service"}
     context.user_data["brief"] = {}
     await update.effective_message.reply_text(
-        "📝 <b>Projekt i ri</b> — hapi 1/5\n\nÇfarë lloj projekti është?",
+        "📝 <b>Projekt i ri</b>\n\nÇfarë lloj projekti është?",
         parse_mode="HTML", reply_markup=service_kb("briefsvc"))
 
 
@@ -632,7 +766,7 @@ async def brief_service_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.setdefault("brief", {})["service"] = SERVICE_NAMES.get(sid, sid)
     flow["step"] = "desc"
     await q.message.reply_text(
-        "Hapi 2/5 — Përshkruaje projektin: çfarë duhet të bëjë, për kë është, "
+        "Përshkruaje projektin: çfarë duhet të bëjë, për kë është, "
         "çfarë faqesh/funksionesh mendon?", parse_mode="HTML")
 
 
@@ -646,12 +780,12 @@ async def brief_text_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
         kb = InlineKeyboardMarkup([[InlineKeyboardButton(b, callback_data=f"briefbud:{i}")]
                                     for i, b in enumerate(BUDGETS)])
         await update.message.reply_text(
-            "Hapi 3/5 — Buxheti i përafërt?", reply_markup=kb)
+            "Buxheti i përafërt?", reply_markup=kb)
     elif step == "deadline":
         context.user_data["brief"]["deadline"] = text
         flow["step"] = "contact"
         await update.message.reply_text(
-            "Hapi 5/5 — Kontakti yt (telefon ose email):")
+            "Kontakti yt (telefon ose email):")
     elif step == "contact":
         context.user_data["brief"]["contact"] = text
         await brief_finish(update, context)
@@ -667,7 +801,7 @@ async def brief_budget_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.setdefault("brief", {})["budget"] = BUDGETS[idx]
     flow["step"] = "deadline"
     await q.message.reply_text(
-        "Hapi 4/5 — Kur të duhet gati? (p.sh. brenda muajit / kam një datë)")
+        "Kur të duhet gati? (p.sh. brenda muajit / kam një datë)")
 
 
 async def brief_finish(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -735,10 +869,13 @@ async def admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
 MENU_DISPATCH = {
     "💼 Shërbimet": "services",
     "🗂 Shembuj pune": "works",
+    "🎴 Kartvizita ime": "card",
     "🎴 Kartvizita": "card",
     "🔐 Aksesi im": "access",
     "💬 Fol me Erionin": "talk",
     "📝 Nis një projekt": "brief",
+    "❓ FAQ": "faq",
+    "📄 CV-ja ime": "cv",
 }
 
 
@@ -778,6 +915,12 @@ async def fallback_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if action == "brief":
         await brief_menu_start(update, context)
+        return
+    if action == "faq":
+        await show_faq(update, context)
+        return
+    if action == "cv":
+        await show_cv(update, context)
         return
     if has_access(user):
         if context.user_data.get("talk"):
@@ -878,6 +1021,27 @@ async def adm_backup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("💾 Backup-i u dërgua më sipër 👆")
 
 
+async def adm_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/statusi [teksti] — statusi i disponueshmërisë që shohin klientët.
+    Vetëm admin; për të gjithë të tjerët heshtje totale (si /backup)."""
+    if not is_admin(update.effective_user):
+        return
+    args = [a for a in (context.args or []) if a.strip()]
+    if not args:
+        await update.message.reply_text(
+            "🟢 <b>Statusi aktual i disponueshmërisë</b>\n\n"
+            f"{store.get_status()}\n\n"
+            "Për ta ndryshuar: /statusi &lt;teksti i ri&gt; "
+            "(max ~120 karaktere). Shfaqet te faqja kryesore e klientëve.",
+            parse_mode="HTML")
+        return
+    text = " ".join(args).strip()[:120]
+    store.set_status(text)
+    await update.message.reply_text(
+        "✅ <b>Statusi u përditësua</b> — tani klientët shohin:\n\n"
+        f"{store.get_status()}", parse_mode="HTML")
+
+
 async def adm_revoke(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user):
         return
@@ -934,6 +1098,7 @@ def build_app():
     app.add_handler(CommandHandler("revoko", adm_revoke))
     app.add_handler(CommandHandler("zgjat", adm_extend))
     app.add_handler(CommandHandler("backup", adm_backup))
+    app.add_handler(CommandHandler("statusi", adm_status))
     # callback-et (secili me prefiksin e vet, pa konflikte)
     app.add_handler(CallbackQueryHandler(gate_code_cb, pattern=r"^gate:code$"))
     app.add_handler(CallbackQueryHandler(gate_req_cb, pattern=r"^gate:req$"))
@@ -941,6 +1106,7 @@ def build_app():
     app.add_handler(CallbackQueryHandler(req_contact_skip, pattern=r"^req:nocontact$"))
     app.add_handler(CallbackQueryHandler(admin_decision_cb, pattern=r"^adm:(ok|no):[0-9a-f]+$"))
     app.add_handler(CallbackQueryHandler(service_detail_cb, pattern=r"^det:"))
+    app.add_handler(CallbackQueryHandler(works_cb, pattern=r"^works:"))
     app.add_handler(CallbackQueryHandler(brief_start_cb, pattern=r"^cli:brief$"))
     app.add_handler(CallbackQueryHandler(brief_service_cb, pattern=r"^briefsvc:"))
     app.add_handler(CallbackQueryHandler(brief_budget_cb, pattern=r"^briefbud:\d+$"))
