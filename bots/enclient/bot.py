@@ -21,6 +21,7 @@ Pas zhbllokimit (klient): shërbimet, shembuj pune, formulari i projektit
 Komandat e adminit (vetëm ADMIN_ID):
   /krijo_kod [ditë] [shënim]   /kodet   /klientet
   /revoko <user_id>            /zgjat <user_id> [ditë]   /panel
+  /backup                      (vetëm admin; NUK është në menunë publike)
 
 Sekretet VETËM nga ambienti / .env (kurë në kod):
   CLIENT_BOT_TOKEN  — token-i nga @BotFather (i detyrueshëm)
@@ -139,6 +140,42 @@ LOCK_TEXT = (
     "personalisht nga Erioni."
 )
 
+# Fiks 3 (siguri): te dera, TË GJITHA dështimet marrin TË NJËJTIN mesazh
+# gjenerik — vizitori s'mëson dot nëse kodi ekziston, ka skaduar, është
+# revokuar apo i përket dikujt tjetër. Arsyeja e saktë i shkon vetëm adminit.
+GATE_FAIL_TEXT = (
+    "❌ <b>Kodi nuk u pranua.</b>\n\n"
+    "Kontrollo që e ke shkruar saktë (formati: EN-XXXX-XXXX) dhe provo "
+    "sërish. Nëse kodi të është dhënë nga Erioni dhe prapë s'pranohet, "
+    "shkruaji atij në Instagram: @erjonixx"
+)
+
+FAIL_STATUS_LABELS = {
+    "invalid": "kod i pasaktë / i panjohur",
+    "expired": "kod i skaduar",
+    "revoked": "kod i revokuar",
+    "bound_other": "kod i lidhur me një llogari tjetër",
+}
+
+# Fiks 2 (anti-spam): kufijtë ditorë për vizitorë/klientë
+REQ_PENDING_TEXT = (
+    "⏳ <b>Ke tashmë një kërkesë në pritje.</b>\n\n"
+    "Kërkesa jote e mëparshme është dërguar dhe po pret përgjigjen e "
+    "Erionit — s'mund të dërgosh një tjetër ndërkohë. Kur të shqyrtohet, "
+    "do të njoftohesh këtu."
+)
+REQ_DAILY_TEXT = (
+    "⏳ <b>Ke arritur limitin ditor të kërkesave.</b>\n\n"
+    "Mund të dërgosh maksimumi 2 kërkesa për shërbim brenda një dite. "
+    "Provo sërish nesër — ose shkruaji Erionit në Instagram: @erjonixx"
+)
+BRIEF_DAILY_TEXT = (
+    "⏳ <b>Ke arritur limitin ditor të brief-eve.</b>\n\n"
+    "Mund të dërgosh maksimumi 3 brief-e projekti brenda një dite. "
+    "Brief-i i ri mund të niset nesër — për diçka urgjente përdor "
+    "💬 <b>Fol me Erionin</b>."
+)
+
 WELCOME_CLIENT = (
     "✨ <b>Mirë se erdhe në portalin tënd privat, {name}.</b>\n\n"
     "Këtu gjen shërbimet, shembujt e punës dhe formularin për të nisur "
@@ -197,7 +234,8 @@ async def show_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/kodet — kodet e krijuara dhe statusi i tyre\n"
             "/klientet — klientët aktivë\n"
             "/revoko &lt;user_id&gt; — hiq aksesin menjëherë\n"
-            "/zgjat &lt;user_id&gt; [ditë] — zgjat aksesin (default 30)",
+            "/zgjat &lt;user_id&gt; [ditë] — zgjat aksesin (default 30)\n"
+            "/backup — merr kopjen aktuale të të dhënave (data.json)",
             parse_mode="HTML")
 
 
@@ -207,6 +245,19 @@ async def notify_admin(context: ContextTypes.DEFAULT_TYPE, text: str, markup=Non
                                        reply_markup=markup)
     except Exception as e:  # admini s'e ka hapur botin ende etj.
         log.warning("notify_admin dështoi: %s", e)
+
+
+async def send_backup(context: ContextTypes.DEFAULT_TYPE, caption: str):
+    """Fiks 4: dërgon data.json aktual te admini si dokument (backup)."""
+    try:
+        if not os.path.exists(store.path):
+            store._save()  # file-i krijohet në mutacionin e parë; materializoje
+        with open(store.path, "rb") as f:
+            await context.bot.send_document(
+                ADMIN_ID, document=f, filename="enclient-data.json",
+                caption=caption)
+    except Exception as e:
+        log.warning("backup dështoi: %s", e)
 
 
 # ---------------------------------------------------------------- /start
@@ -264,26 +315,36 @@ async def try_redeem(update: Update, context: ContextTypes.DEFAULT_TYPE, code: s
                            f"👤 {user.first_name or ''} (@{user.username or '—'}, id {user.id})\n"
                            f"📝 Shënimi i kodit: {rec.get('note') or '—'}")
         await show_home(update, context)
-    elif status == "bound_other":
-        await _fail(update, context, "⚠️ Ky kod i përket një klienti tjetër dhe nuk mund të përdoret në këtë llogari.")
-    elif status == "expired":
-        await _fail(update, context, "⌛ Ky kod ka skaduar. Kontakto Erionin në Instagram për një kod të ri.")
-    elif status == "revoked":
-        await _fail(update, context, "🚫 Ky kod është revokuar. Kontakto Erionin për detaje.")
     else:
-        await _fail(update, context, "❌ Kod i pasaktë. Kontrolloje dhe provo sërish.")
+        await _gate_fail(update, context, status)
 
 
-async def _fail(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+async def _gate_fail(update: Update, context: ContextTypes.DEFAULT_TYPE, status: str):
+    """Dështim te dera: vizitori sheh VETËM mesazhin gjenerik (Fiks 3);
+    arsyeja e saktë ruhet dhe i raportohet vetëm adminit."""
     user = update.effective_user
-    locked = store.register_fail(user.id)
-    await update.effective_message.reply_text(text)
+    who = f"{user.first_name or ''} (@{user.username or '—'}, id {user.id})"
+    locked = store.register_fail(user.id, status=status)
+    await update.effective_message.reply_text(GATE_FAIL_TEXT, parse_mode="HTML")
+    if status == "bound_other":
+        # sinjali i vjedhjes/përcjelljes së kodit — njoftim i menjëhershëm
+        await notify_admin(
+            context,
+            "🚨 <b>Tentativë me kodin e një klienti tjetër</b>\n"
+            f"👤 {who}\n"
+            "Kodi i përdorur është i lidhur me një llogari tjetër — sinjal "
+            "i mundshëm përcjelljeje ose vjedhjeje të kodit. Vizitorit iu "
+            "tregua vetëm mesazhi gjenerik.")
     if locked:
         await update.effective_message.reply_text(
             "🔒 Shumë tentativa të gabuara — llogaria u kyç për 60 minuta.")
-        await notify_admin(context,
-                           f"🚨 <b>Kyçje pas 3 kodesh të gabuara</b>\n"
-                           f"👤 {user.first_name or ''} (@{user.username or '—'}, id {user.id})")
+        last = store.last_fail_status(user.id) or status
+        label = FAIL_STATUS_LABELS.get(last, last or "—")
+        await notify_admin(
+            context,
+            f"🚨 <b>Kyçje pas 3 tentativave të dështuara</b>\n"
+            f"👤 {who}\n"
+            f"ℹ️ Arsyeja e tentativës së fundit: <b>{label}</b>")
 
 
 async def code_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -307,6 +368,13 @@ async def gate_req_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     if has_access(q.from_user):
         await show_home(update, context)
+        return
+    block = store.request_block(q.from_user.id)  # anti-spam (Fiks 2)
+    if block == "pending":
+        await q.message.reply_text(REQ_PENDING_TEXT, parse_mode="HTML")
+        return
+    if block == "daily":
+        await q.message.reply_text(REQ_DAILY_TEXT, parse_mode="HTML")
         return
     context.user_data["flow"] = {"kind": "req", "step": "service"}
     context.user_data["req"] = {}
@@ -364,6 +432,14 @@ async def req_contact_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def req_finish(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     d = context.user_data.get("req", {})
+    block = store.request_block(user.id)  # kontroll i dytë, në krijim (Fiks 2)
+    if block:
+        await update.effective_message.reply_text(
+            REQ_PENDING_TEXT if block == "pending" else REQ_DAILY_TEXT,
+            parse_mode="HTML")
+        context.user_data.pop("req", None)
+        context.user_data.pop("flow", None)
+        return
     req_id = store.create_request(
         user.id, d.get("name") or user.first_name or "", user.username or "",
         d.get("service", ""), d.get("contact", ""), d.get("desc", ""))
@@ -435,6 +511,12 @@ async def admin_decision_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML", reply_markup=CLIENT_KB)
     except Exception as e:
         log.warning("miratimi s'u dërgua: %s", e)
+    # Fiks 4: backup automatik pas aktivizimit të klientit të ri
+    await send_backup(
+        context,
+        "💾 Backup automatik — u aktivizua klienti i ri: "
+        f"{req['name'] or '—'} (@{req['username'] or '—'}). "
+        f"Klientë gjithsej: {len(store.list_clients())}.")
 
 
 # ---------------------------------------------------------------- menuja e klientit
@@ -517,6 +599,9 @@ async def brief_start_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.answer("Aksesi është i kyçur.", show_alert=True)
         return
     await q.answer()
+    if store.brief_block(q.from_user.id):  # anti-spam (Fiks 2)
+        await q.message.reply_text(BRIEF_DAILY_TEXT, parse_mode="HTML")
+        return
     context.user_data["flow"] = {"kind": "brief", "step": "service"}
     context.user_data["brief"] = {}
     await q.message.reply_text(
@@ -526,6 +611,9 @@ async def brief_start_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def brief_menu_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await guard_client(update):
+        return
+    if store.brief_block(update.effective_user.id):  # anti-spam (Fiks 2)
+        await update.effective_message.reply_text(BRIEF_DAILY_TEXT, parse_mode="HTML")
         return
     context.user_data["flow"] = {"kind": "brief", "step": "service"}
     context.user_data["brief"] = {}
@@ -585,6 +673,11 @@ async def brief_budget_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def brief_finish(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     d = context.user_data.get("brief", {})
+    if store.brief_block(user.id):  # kontroll përfundimtar (Fiks 2)
+        await update.message.reply_text(BRIEF_DAILY_TEXT, parse_mode="HTML")
+        context.user_data.pop("brief", None)
+        context.user_data.pop("flow", None)
+        return
     await notify_admin(
         context,
         "🚀 <b>BRIEF I RI PROJEKTI</b>\n"
@@ -594,6 +687,7 @@ async def brief_finish(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"💰 Buxheti: {d.get('budget', '—')}\n"
         f"⏰ Afati: {d.get('deadline', '—')}\n"
         f"📞 Kontakti: {d.get('contact', '—')}")
+    store.bump_today(user.id, "briefs")
     await update.message.reply_text(
         "✅ <b>Brief-i u dërgua!</b>\n\nErioni e lexon dhe të përgjigjet këtu "
         "me hapat e radhës dhe preventivin. Faleminderit për besimin!",
@@ -772,6 +866,18 @@ async def adm_clients(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
 
+async def adm_backup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Fiks 4: /backup — vetëm admin; për të tjerët heshtje totale."""
+    if not is_admin(update.effective_user):
+        return
+    now = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M")
+    await send_backup(
+        context,
+        f"💾 Backup manual i të dhënave — {now} (UTC)\n"
+        f"👥 Klientë gjithsej: {len(store.list_clients())}")
+    await update.message.reply_text("💾 Backup-i u dërgua më sipër 👆")
+
+
 async def adm_revoke(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user):
         return
@@ -827,6 +933,7 @@ def build_app():
     app.add_handler(CommandHandler("klientet", adm_clients))
     app.add_handler(CommandHandler("revoko", adm_revoke))
     app.add_handler(CommandHandler("zgjat", adm_extend))
+    app.add_handler(CommandHandler("backup", adm_backup))
     # callback-et (secili me prefiksin e vet, pa konflikte)
     app.add_handler(CallbackQueryHandler(gate_code_cb, pattern=r"^gate:code$"))
     app.add_handler(CallbackQueryHandler(gate_req_cb, pattern=r"^gate:req$"))
