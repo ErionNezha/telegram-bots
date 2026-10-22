@@ -30,8 +30,22 @@ Struktura e data.json:
   "relay":   { "<admin_msg_id>": int },  # msg i përcjellë te admini -> user_id i klientit
   "daily":   { "<user_id>": {"<YYYY-MM-DD>": {"requests": int,
                                               "briefs": int}} },
-  "settings": { "status": str }  # statusi i disponueshmërisë (vetëm zonë private)
+  "settings": { "status": str },  # statusi i disponueshmërisë (vetëm zonë private)
+  "projects": { "<project_id>": {"client_id": int, "title": str,
+                                  "stage": int, "note": str,
+                                  "created_at": iso, "updated_at": iso,
+                                  "done": bool} },
+  "slots":   { "<slot_id>": {"dt_iso": iso (ora lokale e Tiranës),
+                             "booked_by": int|None,
+                             "booking_id": str|None} },
+  "bookings": { "<booking_id>": {"client_id": int, "slot_id": str,
+                                 "service_key": str,
+                                 "status": "pending"|"approved"|"rejected",
+                                 "reminded": bool, "created_at": iso} }
 }
+Klienti ka edhe fushën opsionale "expiry_reminded_for" (iso) — vlera e
+expires_at për të cilën iu dërgua kujtesa e skadimit (F3); kur afati
+zgjatet, vlera s'përputhet më dhe kujtesa mund të dërgohet sërish.
 """
 import hashlib
 import json
@@ -44,6 +58,9 @@ from datetime import datetime, timedelta, timezone
 _ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # pa 0/O/1/I — pa keqkuptime
 
 DEFAULT_STATUS = "🟢 I disponueshëm për projekte të reja"
+
+# Fazat e projektit — etiketat e sakta që sheh klienti te "Projekti im".
+PROJECT_STAGES = ["Briefi", "Dizajni", "Zhvillimi", "Testimi", "Dorëzimi"]
 
 
 def now_utc() -> datetime:
@@ -95,13 +112,15 @@ class Store:
                 d = json.load(f)
             if isinstance(d, dict):
                 for k in ("codes", "clients", "requests", "attempts", "relay",
-                          "daily", "settings"):
+                          "daily", "settings", "projects", "slots",
+                          "bookings"):
                     d.setdefault(k, {})
                 return d
         except (OSError, ValueError):
             pass
         return {"codes": {}, "clients": {}, "requests": {}, "attempts": {},
-                "relay": {}, "daily": {}, "settings": {}}
+                "relay": {}, "daily": {}, "settings": {}, "projects": {},
+                "slots": {}, "bookings": {}}
 
     def _save(self):
         # pastro numëruesit ditorë më të vjetër se 2 ditë (mbahen të lehtë)
@@ -397,3 +416,179 @@ class Store:
     def relay_target(self, admin_msg_id: int):
         with self._lock:
             return self._data["relay"].get(str(admin_msg_id))
+
+    # ---------- projektet e klientëve (F1: "Projekti im") ----------
+    def create_project(self, client_id: int, title: str, at: datetime = None):
+        at = at or now_utc()
+        pid = secrets.token_hex(4)
+        with self._lock:
+            while pid in self._data["projects"]:
+                pid = secrets.token_hex(4)
+            rec = {"id": pid, "client_id": int(client_id),
+                   "title": (title or "").strip(), "stage": 0, "note": "",
+                   "created_at": iso(at), "updated_at": iso(at),
+                   "done": False}
+            self._data["projects"][pid] = rec
+            self._save()
+        return dict(rec)
+
+    def get_project(self, project_id: str):
+        with self._lock:
+            rec = self._data["projects"].get(project_id)
+            return dict(rec) if rec else None
+
+    def list_projects(self, client_id: int):
+        with self._lock:
+            out = [dict(r) for r in self._data["projects"].values()
+                   if r.get("client_id") == int(client_id)]
+        return sorted(out, key=lambda r: r.get("created_at") or "")
+
+    def latest_project(self, client_id: int):
+        """Projekti më i ri JO i përfunduar i klientit (objektivi i
+        komandave /faza, /shenim_projekti, /projekt_fund)."""
+        cand = [p for p in self.list_projects(client_id) if not p.get("done")]
+        return cand[-1] if cand else None
+
+    def _update_project(self, project_id: str, at: datetime = None, **kw):
+        at = at or now_utc()
+        with self._lock:
+            rec = self._data["projects"].get(project_id)
+            if rec is None:
+                return None
+            rec.update(kw)
+            rec["updated_at"] = iso(at)
+            self._save()
+            return dict(rec)
+
+    def set_stage(self, project_id: str, stage_idx: int, at: datetime = None):
+        idx = max(0, min(len(PROJECT_STAGES) - 1, int(stage_idx)))
+        return self._update_project(project_id, at=at, stage=idx)
+
+    def set_note(self, project_id: str, text: str, at: datetime = None):
+        return self._update_project(project_id, at=at,
+                                    note=(text or "").strip())
+
+    def finish_project(self, project_id: str, at: datetime = None):
+        return self._update_project(project_id, at=at, done=True,
+                                    stage=len(PROJECT_STAGES) - 1)
+
+    # ---------- oraret & rezervimet e konsultave (F2) ----------
+    def add_slot(self, dt_iso_str: str):
+        sid = secrets.token_hex(4)
+        with self._lock:
+            while sid in self._data["slots"]:
+                sid = secrets.token_hex(4)
+            rec = {"id": sid, "dt_iso": dt_iso_str,
+                   "booked_by": None, "booking_id": None}
+            self._data["slots"][sid] = rec
+            self._save()
+        return dict(rec)
+
+    def list_slots(self, at: datetime = None):
+        """Të gjitha oraret, të renditura sipas kohës. Oraret e kaluara
+        të lira pastrohen vetë në lexim; oraret e rezervuara ruhen si
+        historik i rezervimeve."""
+        at = at or now_utc()
+        with self._lock:
+            changed = False
+            for sid in list(self._data["slots"]):
+                s = self._data["slots"][sid]
+                dt = parse_iso(s.get("dt_iso"))
+                if dt and dt <= at and s.get("booked_by") is None:
+                    del self._data["slots"][sid]
+                    changed = True
+            if changed:
+                self._save()
+            out = [dict(s) for s in self._data["slots"].values()]
+        return sorted(out, key=lambda s: s.get("dt_iso") or "")
+
+    def open_slots(self, at: datetime = None):
+        return [s for s in self.list_slots(at=at)
+                if s.get("booked_by") is None]
+
+    def get_slot(self, slot_id: str):
+        with self._lock:
+            rec = self._data["slots"].get(slot_id)
+            return dict(rec) if rec else None
+
+    def delete_slot(self, slot_id: str) -> bool:
+        """Fshin vetëm orar të lirë (të parezervuar)."""
+        with self._lock:
+            rec = self._data["slots"].get(slot_id)
+            if rec is None or rec.get("booked_by") is not None:
+                return False
+            del self._data["slots"][slot_id]
+            self._save()
+            return True
+
+    def create_booking(self, client_id: int, slot_id: str, service_key: str,
+                       at: datetime = None):
+        at = at or now_utc()
+        bid = secrets.token_hex(4)
+        with self._lock:
+            while bid in self._data["bookings"]:
+                bid = secrets.token_hex(4)
+            rec = {"id": bid, "client_id": int(client_id),
+                   "slot_id": slot_id, "service_key": service_key or "",
+                   "status": "pending", "reminded": False,
+                   "created_at": iso(at)}
+            self._data["bookings"][bid] = rec
+            self._save()
+        return dict(rec)
+
+    def get_booking(self, booking_id: str):
+        with self._lock:
+            rec = self._data["bookings"].get(booking_id)
+            return dict(rec) if rec else None
+
+    def list_bookings(self):
+        with self._lock:
+            return {bid: dict(r) for bid, r in self._data["bookings"].items()}
+
+    def pending_booking_for(self, client_id: int):
+        """Rezervimi 'pending' i klientit (nëse ka) — max 1 njëherësh."""
+        with self._lock:
+            for rec in self._data["bookings"].values():
+                if (rec.get("client_id") == int(client_id)
+                        and rec.get("status") == "pending"):
+                    return dict(rec)
+        return None
+
+    def set_booking_status(self, booking_id: str, status: str) -> bool:
+        """Vendos statusin e rezervimit. Në 'approved', orari shënohet
+        i rezervuar nga klienti (nuk ofrohet më); në 'rejected' orari
+        mbetet i lirë, siç ishte."""
+        with self._lock:
+            rec = self._data["bookings"].get(booking_id)
+            if rec is None:
+                return False
+            rec["status"] = status
+            if status == "approved":
+                slot = self._data["slots"].get(rec.get("slot_id"))
+                if slot is not None:
+                    slot["booked_by"] = rec.get("client_id")
+                    slot["booking_id"] = booking_id
+            self._save()
+            return True
+
+    def set_booking_reminded(self, booking_id: str, val: bool = True) -> bool:
+        with self._lock:
+            rec = self._data["bookings"].get(booking_id)
+            if rec is None:
+                return False
+            rec["reminded"] = bool(val)
+            self._save()
+            return True
+
+    # ---------- kujtesa e skadimit të aksesit (F3) ----------
+    def mark_expiry_reminded(self, user_id: int) -> bool:
+        """Shënon se kujtesa e skadimit iu dërgua klientit për afatin
+        aktual (expires_at). Kur afati zgjatet (expires_at ndryshon),
+        shënimi s'përputhet më dhe klienti mund të kujtohet sërish."""
+        with self._lock:
+            rec = self._data["clients"].get(str(user_id))
+            if rec is None:
+                return False
+            rec["expiry_reminded_for"] = rec.get("expires_at")
+            self._save()
+            return True
