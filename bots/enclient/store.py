@@ -41,8 +41,19 @@ Struktura e data.json:
   "bookings": { "<booking_id>": {"client_id": int, "slot_id": str,
                                  "service_key": str,
                                  "status": "pending"|"approved"|"rejected",
-                                 "reminded": bool, "created_at": iso} }
+                                 "reminded": bool, "created_at": iso} },
+  "reviews": { "<review_id>": {"client_id": int, "name": str,
+                                "project_id": str, "stars": int (1-5,
+                                vetëm intern), "text": str,
+                                "status": "pending"|"approved"|"rejected",
+                                "created_at": iso} }
 }
+Klienti ka edhe fushën "lang" ("sq"|"en", default "sq") — gjuha e
+ndërfaqes; zgjedhja e vizitorit para aktivizimit ruhet te
+settings["langs"] dhe kalon në regjistrin e klientit në aktivizim.
+settings ka edhe: "welcome_voice_file_id" (mesazhi zanor i
+mirëseardhjes), "weekly" (numëruesit javorë për raportin, çelës
+ISO "YYYY-Www", mbahen 12 javët e fundit) dhe "last_digest_week".
 Klienti ka edhe fushën opsionale "expiry_reminded_for" (iso) — vlera e
 expires_at për të cilën iu dërgua kujtesa e skadimit (F3); kur afati
 zgjatet, vlera s'përputhet më dhe kujtesa mund të dërgohet sërish.
@@ -54,6 +65,12 @@ import secrets
 import string
 import threading
 from datetime import datetime, timedelta, timezone
+
+try:
+    from zoneinfo import ZoneInfo
+    TIRANA = ZoneInfo("Europe/Tirane")
+except Exception:  # pa tzdata — përafërsi fikse
+    TIRANA = timezone(timedelta(hours=2))
 
 _ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # pa 0/O/1/I — pa keqkuptime
 
@@ -113,14 +130,14 @@ class Store:
             if isinstance(d, dict):
                 for k in ("codes", "clients", "requests", "attempts", "relay",
                           "daily", "settings", "projects", "slots",
-                          "bookings"):
+                          "bookings", "reviews"):
                     d.setdefault(k, {})
                 return d
         except (OSError, ValueError):
             pass
         return {"codes": {}, "clients": {}, "requests": {}, "attempts": {},
                 "relay": {}, "daily": {}, "settings": {}, "projects": {},
-                "slots": {}, "bookings": {}}
+                "slots": {}, "bookings": {}, "reviews": {}}
 
     def _save(self):
         # pastro numëruesit ditorë më të vjetër se 2 ditë (mbahen të lehtë)
@@ -132,6 +149,12 @@ class Store:
                     del daily[uid][day]
             if not daily[uid]:
                 del daily[uid]
+        # numëruesit javorë: mbahen vetëm 12 javët e fundit
+        settings = self._data.get("settings") or {}
+        weekly = settings.get("weekly") or {}
+        if len(weekly) > 12:
+            for k in sorted(weekly)[:-12]:
+                del weekly[k]
         tmp = self.path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(self._data, f, ensure_ascii=False, indent=1)
@@ -153,8 +176,89 @@ class Store:
             day = self._data["daily"].setdefault(str(user_id), {})
             entry = day.setdefault(self._day_key(at), {"requests": 0, "briefs": 0})
             entry[kind] = int(entry.get(kind, 0)) + 1
+            if kind == "briefs":  # numëruesi javor i raportit (F6)
+                self._bump_weekly_locked("briefs", at)
             self._save()
             return entry[kind]
+
+    # ---------- numëruesit javorë (F6: raporti javor) ----------
+    WEEKLY_KINDS = ("clients", "requests", "requests_approved", "briefs",
+                    "bookings", "bookings_approved", "reviews")
+
+    @staticmethod
+    def week_key(at: datetime = None) -> str:
+        """Çelësi ISO i javës (data lokale e Tiranës): '2026-W43'."""
+        at = at or now_utc()
+        d = at.astimezone(TIRANA).date()
+        y, w, _ = d.isocalendar()
+        return f"{y}-W{w:02d}"
+
+    def _bump_weekly_locked(self, kind: str, at: datetime = None):
+        """Rrit numëruesin javor — thirret VETËM nën kyç (nga metoda
+        që tashmë e kanë kyçin), prandaj s'ruan vetë."""
+        weekly = self._data.setdefault("settings", {}).setdefault("weekly", {})
+        entry = weekly.setdefault(self.week_key(at),
+                                  {k: 0 for k in self.WEEKLY_KINDS})
+        entry[kind] = int(entry.get(kind, 0)) + 1
+
+    def bump_weekly(self, kind: str, at: datetime = None):
+        with self._lock:
+            self._bump_weekly_locked(kind, at)
+            self._save()
+
+    def weekly_counters(self, key: str = None, at: datetime = None) -> dict:
+        key = key or self.week_key(at)
+        with self._lock:
+            entry = (self._data.get("settings") or {}).get("weekly", {}).get(key) or {}
+            return {k: int(entry.get(k, 0)) for k in self.WEEKLY_KINDS}
+
+    def get_last_digest_week(self):
+        with self._lock:
+            return (self._data.get("settings") or {}).get("last_digest_week")
+
+    def set_last_digest_week(self, key: str):
+        with self._lock:
+            self._data.setdefault("settings", {})["last_digest_week"] = key
+            self._save()
+
+    # ---------- gjuha e ndërfaqes (F3: sq/en për përdorues) ----------
+    def get_lang(self, user_id: int) -> str:
+        """Gjuha e përdoruesit: regjistri i klientit ka përparësi;
+        për vizitorin vlen zgjedhja e ruajtur te settings['langs'];
+        default 'sq'."""
+        with self._lock:
+            rec = self._data["clients"].get(str(user_id))
+            if rec and rec.get("lang") in ("sq", "en"):
+                return rec["lang"]
+            lg = ((self._data.get("settings") or {}).get("langs") or {}
+                  ).get(str(user_id))
+            return lg if lg in ("sq", "en") else "sq"
+
+    def set_lang(self, user_id: int, lang: str) -> str:
+        lang = lang if lang in ("sq", "en") else "sq"
+        with self._lock:
+            settings = self._data.setdefault("settings", {})
+            settings.setdefault("langs", {})[str(user_id)] = lang
+            rec = self._data["clients"].get(str(user_id))
+            if rec is not None:
+                rec["lang"] = lang
+            self._save()
+            return lang
+
+    # ---------- mesazhi zanor i mirëseardhjes (F5) ----------
+    def get_welcome_voice(self):
+        with self._lock:
+            return (self._data.get("settings") or {}).get(
+                "welcome_voice_file_id") or None
+
+    def set_welcome_voice(self, file_id):
+        with self._lock:
+            settings = self._data.setdefault("settings", {})
+            if file_id:
+                settings["welcome_voice_file_id"] = file_id
+            else:
+                settings.pop("welcome_voice_file_id", None)
+            self._save()
 
     # ---------- kodet ----------
     def create_code(self, days: int = 30, note: str = "", at: datetime = None):
@@ -219,6 +323,14 @@ class Store:
         at = at or now_utc()
         exp = expires_at or (at + timedelta(days=days))
         with self._lock:
+            existing = self._data["clients"].get(str(user_id))
+            # gjuha (F3): ruhet e regjistrit ekzistues ose zgjedhja e
+            # vizitorit te settings['langs']; default shqip
+            lang = (existing or {}).get("lang") or (
+                (self._data.get("settings") or {}).get("langs") or {}
+            ).get(str(user_id)) or "sq"
+            if lang not in ("sq", "en"):
+                lang = "sq"
             self._data["clients"][str(user_id)] = {
                 "name": name or "",
                 "username": username or "",
@@ -227,7 +339,10 @@ class Store:
                 "expires_at": iso(exp),
                 "via": via,
                 "revoked": False,
+                "lang": lang,
             }
+            if existing is None:  # klient vërtet i ri → numëruesi javor (F6)
+                self._bump_weekly_locked("clients", at)
             self._save()
         return dict(self._data["clients"][str(user_id)])
 
@@ -321,6 +436,7 @@ class Store:
             day = self._data["daily"].setdefault(str(user_id), {})
             entry = day.setdefault(self._day_key(at), {"requests": 0, "briefs": 0})
             entry["requests"] = int(entry.get("requests", 0)) + 1
+            self._bump_weekly_locked("requests", at)  # raporti javor (F6)
             self._save()
         return req_id
 
@@ -329,11 +445,24 @@ class Store:
             rec = self._data["requests"].get(req_id)
             return dict(rec) if rec else None
 
+    def list_requests(self, status: str = None):
+        """Të gjitha kërkesat (kopje), opsionalisht me filtër statusi
+        — përdoret nga raporti javor (F6) për pikat në pritje."""
+        with self._lock:
+            rows = [dict(r) for r in self._data["requests"].values()]
+        if status is not None:
+            rows = [r for r in rows if r.get("status") == status]
+        return rows
+
     def set_request_status(self, req_id: str, status: str) -> bool:
         with self._lock:
             rec = self._data["requests"].get(req_id)
             if rec is None:
                 return False
+            # miratimi numërohet në raportin javor vetëm kur kalon
+            # nga 'pending' në 'approved' (pa numërime të dyfishta)
+            if status == "approved" and rec.get("status") == "pending":
+                self._bump_weekly_locked("requests_approved")
             rec["status"] = status
             self._save()
             return True
@@ -533,6 +662,7 @@ class Store:
                    "status": "pending", "reminded": False,
                    "created_at": iso(at)}
             self._data["bookings"][bid] = rec
+            self._bump_weekly_locked("bookings", at)  # raporti javor (F6)
             self._save()
         return dict(rec)
 
@@ -562,6 +692,10 @@ class Store:
             rec = self._data["bookings"].get(booking_id)
             if rec is None:
                 return False
+            # miratimi numërohet në raportin javor vetëm në kalimin
+            # nga 'pending' në 'approved'
+            if status == "approved" and rec.get("status") == "pending":
+                self._bump_weekly_locked("bookings_approved")
             rec["status"] = status
             if status == "approved":
                 slot = self._data["slots"].get(rec.get("slot_id"))
@@ -579,6 +713,60 @@ class Store:
             rec["reminded"] = bool(val)
             self._save()
             return True
+
+    # ---------- vlerësimet e klientëve (paketa F1) ----------
+    def create_review(self, client_id: int, name: str, project_id: str,
+                      stars: int, text: str, at: datetime = None):
+        """Krijon vlerësim 'pending' për një projekt të përfunduar.
+        Maksimumi një vlerësim për projekt — thirrjet e dyta kthejnë
+        vlerësimin ekzistues. Yjet (1-5) janë vlerë interne; klienti
+        sheh vetëm simbolet ⭐ të përsëritura."""
+        at = at or now_utc()
+        with self._lock:
+            for rec in self._data["reviews"].values():
+                if rec.get("project_id") == project_id:
+                    return dict(rec), False
+            rid = secrets.token_hex(4)
+            while rid in self._data["reviews"]:
+                rid = secrets.token_hex(4)
+            rec = {"id": rid, "client_id": int(client_id),
+                   "name": name or "", "project_id": project_id,
+                   "stars": max(1, min(5, int(stars))),
+                   "text": (text or "").strip(),
+                   "status": "pending", "created_at": iso(at)}
+            self._data["reviews"][rid] = rec
+            self._bump_weekly_locked("reviews", at)  # raporti javor (F6)
+            self._save()
+        return dict(rec), True
+
+    def get_review(self, review_id: str):
+        with self._lock:
+            rec = self._data["reviews"].get(review_id)
+            return dict(rec) if rec else None
+
+    def review_for_project(self, project_id: str):
+        with self._lock:
+            for rec in self._data["reviews"].values():
+                if rec.get("project_id") == project_id:
+                    return dict(rec)
+        return None
+
+    def set_review_status(self, review_id: str, status: str) -> bool:
+        with self._lock:
+            rec = self._data["reviews"].get(review_id)
+            if rec is None:
+                return False
+            rec["status"] = status
+            self._save()
+            return True
+
+    def list_reviews(self, status: str = None):
+        """Vlerësimet e renditura nga më i riu te më i vjetri."""
+        with self._lock:
+            out = [dict(r) for r in self._data["reviews"].values()
+                   if status is None or r.get("status") == status]
+        return sorted(out, key=lambda r: r.get("created_at") or "",
+                      reverse=True)
 
     # ---------- kujtesa e skadimit të aksesit (F3) ----------
     def mark_expiry_reminded(self, user_id: int) -> bool:
