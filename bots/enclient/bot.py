@@ -135,7 +135,7 @@ WORKS = {
         ("🎬 FilmaHD — katalog filmash e serialesh", "https://filma12hd.vercel.app"),
         ("🛍 KlikoBli — dyqani online", "https://klikobli.netlify.app"),
         ("✨ VELTRIX — prezantim vizual kreativ", "https://veltrix-visuals.netlify.app"),
-        ("🌐 Portfolio e plotë e Erion Nezhës", "https://erionnezha.netlify.app"),
+        ("🌐 Portfolio e plotë e Erion Nezhës", "https://erionxx1.netlify.app"),
         ("🎴 Kartvizita dixhitale", "https://erionnezha.github.io/erionxx-business-card/"),
     ],
     "ai": [
@@ -696,7 +696,7 @@ async def show_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("🎴 Kartvizita dixhitale", url="https://erionnezha.github.io/erionxx-business-card/")],
-        [InlineKeyboardButton("🌐 Portfolio", url="https://erionnezha.netlify.app")],
+        [InlineKeyboardButton("🌐 Portfolio", url="https://erionxx1.netlify.app")],
         [InlineKeyboardButton("💼 LinkedIn", url="https://www.linkedin.com/in/erion-nezha")],
         [InlineKeyboardButton("📸 Instagram", url="https://www.instagram.com/erjonixx/")],
     ])
