@@ -29,7 +29,8 @@ Struktura e data.json:
                               "last_status": str|None} },
   "relay":   { "<admin_msg_id>": int },  # msg i përcjellë te admini -> user_id i klientit
   "daily":   { "<user_id>": {"<YYYY-MM-DD>": {"requests": int,
-                                              "briefs": int}} }
+                                              "briefs": int}} },
+  "settings": { "status": str }  # statusi i disponueshmërisë (vetëm zonë private)
 }
 """
 import hashlib
@@ -41,6 +42,8 @@ import threading
 from datetime import datetime, timedelta, timezone
 
 _ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # pa 0/O/1/I — pa keqkuptime
+
+DEFAULT_STATUS = "🟢 I disponueshëm për projekte të reja"
 
 
 def now_utc() -> datetime:
@@ -91,13 +94,14 @@ class Store:
             with open(self.path, encoding="utf-8") as f:
                 d = json.load(f)
             if isinstance(d, dict):
-                for k in ("codes", "clients", "requests", "attempts", "relay", "daily"):
+                for k in ("codes", "clients", "requests", "attempts", "relay",
+                          "daily", "settings"):
                     d.setdefault(k, {})
                 return d
         except (OSError, ValueError):
             pass
         return {"codes": {}, "clients": {}, "requests": {}, "attempts": {},
-                "relay": {}, "daily": {}}
+                "relay": {}, "daily": {}, "settings": {}}
 
     def _save(self):
         # pastro numëruesit ditorë më të vjetër se 2 ditë (mbahen të lehtë)
@@ -364,6 +368,21 @@ class Store:
         with self._lock:
             self._data["attempts"].pop(str(user_id), None)
             self._save()
+
+    # ---------- cilësimet: statusi i disponueshmërisë ----------
+    def get_status(self) -> str:
+        """Statusi që shohin klientët në faqen kryesore (zonë private).
+        Kurrë në ekranin e kyçjes."""
+        with self._lock:
+            s = (self._data.get("settings") or {}).get("status") or ""
+            return s.strip() or DEFAULT_STATUS
+
+    def set_status(self, text: str) -> str:
+        with self._lock:
+            val = (text or "").strip()[:120]
+            self._data.setdefault("settings", {})["status"] = val
+            self._save()
+            return val or DEFAULT_STATUS
 
     # ---------- relay i mesazheve admin <-> klient ----------
     def map_relay(self, admin_msg_id: int, user_id: int):
