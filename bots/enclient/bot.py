@@ -26,6 +26,17 @@ Një detyrë në sfond (post_init, çdo ~30 min) dërgon kujtesat: për
 konsultat e miratuara që nisin brenda 3 orëve dhe për klientët, afati
 i të cilëve skadon brenda 3 ditëve (klientin + përmbledhje te admini).
 
+Paketa 1–6 (2026-10-22):
+  F1 vlerësime automatike pas dorëzimit (yje + koment opsional,
+     miratim i adminit para publikimit) — /vleresime
+  F2 miratimi i konsultës dërgon file .ics + buton Google Calendar
+  F3 ndërfaqe dygjuhëshe (SQ/EN): zgjedhja te dera (🇦🇱/🇬🇧) dhe te
+     menyja (🌍 Gjuha / Language); ruhet për përdorues, kalon në
+     regjistrin e klientit pas aktivizimit
+  F4 propozim paraprak PDF pas brief-it (stdlib, pa çmime/shuma)
+  F5 mesazh zanor mirëseardhjeje pas çdo aktivizimi të ri
+  F6 raport javor automatik (të hënën) + /raport sipas kërkesës
+
 Komandat e adminit (vetëm ADMIN_ID):
   /krijo_kod [ditë] [shënim]   /kodet   /klientet
   /revoko <user_id>            /zgjat <user_id> [ditë]   /panel
@@ -36,6 +47,9 @@ Komandat e adminit (vetëm ADMIN_ID):
   /slot <YYYY-MM-DD> <HH:MM>   /slotet   /slot_fshi <slot_id>
   /njoftim <teksti>            (broadcast te klientët aktivë)
   /pergjigju <user_id>         (përgjigja tjetër i shkon klientit)
+  /vleresime                   (vlerësimet në pritje — publiko/refuzo)
+  /mireseardhje                /hiq_mireseardhjen   (zëri i mirëseardhjes)
+  /raport                      (raporti javor sipas kërkesës)
 
 Sekretet VETËM nga ambienti / .env (kurë në kod):
   CLIENT_BOT_TOKEN  — token-i nga @BotFather (i detyrueshëm)
@@ -43,9 +57,11 @@ Sekretet VETËM nga ambienti / .env (kurë në kod):
   ENCLIENT_DATA     — rruga e data.json (opsionale)
 """
 import asyncio
+import io
 import logging
 import os
 import sys
+import urllib.parse
 from datetime import datetime, timedelta, timezone
 
 try:
@@ -166,8 +182,8 @@ WORKS_HEADER = "🗂 <b>Shembuj pune reale</b> — projekte të përfunduara dhe
 # Vlerësime REALE (përmbledhje të ndershme, jo citate të sajuara):
 # dy vlerësime me yje maksimale në Google Play për ERION TV.
 # PA shifra (urdhri "mos vendos shifra") — as në atribucion.
-REVIEWS_TEXT = (
-    "⭐ <b>Vlerësime nga përdorues realë</b>\n\n"
+REVIEWS_HEADER = "⭐ <b>Vlerësime nga përdorues realë</b>"
+REVIEWS_PLAY = (
     "⭐⭐⭐⭐⭐\n"
     "Dizajn shumë i pëlqyer dhe navigim i lehtë nëpër aplikacion.\n"
     "<i>— vlerësim në Google Play (ERION TV)</i>\n\n"
@@ -175,6 +191,7 @@ REVIEWS_TEXT = (
     "Kanale të shumta dhe funksionim i qëndrueshëm, pa ndërprerje.\n"
     "<i>— vlerësim në Google Play (ERION TV)</i>"
 )
+REVIEWS_TEXT = REVIEWS_HEADER + "\n\n" + REVIEWS_PLAY
 
 # FAQ — TEPËR cilësore: PA asnjë shifër (urdhri "mos vendos shifra"):
 # jo %, jo shuma, jo afate me ditë/orë, jo premtime të numëruara.
@@ -287,17 +304,26 @@ EXPIRY_CLIENT_TEXT = (
     "Faleminderit që je pjesë e klientëve të mi! ✨"
 )
 
-# Emrat shqip të ditëve/muajve për shfaqjen e orareve të konsultave.
+# Emrat e ditëve/muajve për shfaqjen e orareve të konsultave (F3: dy gjuhë).
 AL_WEEKDAYS = ["e hënë", "e martë", "e mërkurë", "e enjte",
                "e premte", "e shtunë", "e diel"]
 AL_MONTHS = ["janar", "shkurt", "mars", "prill", "maj", "qershor",
              "korrik", "gusht", "shtator", "tetor", "nëntor", "dhjetor"]
+EN_WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday",
+               "Friday", "Saturday", "Sunday"]
+EN_MONTHS = ["January", "February", "March", "April", "May", "June",
+             "July", "August", "September", "October", "November",
+             "December"]
 
 
-def fmt_slot(dt) -> str:
-    """'e premte, 24 tetor — 18:00' (data/ora = të dhëna funksionale)."""
+def fmt_slot(dt, lang: str = "sq") -> str:
+    """'e premte, 24 tetor — 18:00' / 'Friday, October 24 — 18:00'
+    (data/ora = të dhëna funksionale, përjashtohen nga 'pa shifra')."""
     if dt is None:
         return "—"
+    if lang == "en":
+        return (f"{EN_WEEKDAYS[dt.weekday()]}, {EN_MONTHS[dt.month - 1]} "
+                f"{dt.day} — {dt:%H:%M}")
     return (f"{AL_WEEKDAYS[dt.weekday()]}, {dt.day} "
             f"{AL_MONTHS[dt.month - 1]} — {dt:%H:%M}")
 
@@ -310,9 +336,40 @@ CLIENT_KB = ReplyKeyboardMarkup(
      ["📝 Nis një projekt", "🚧 Projekti im"],
      ["💬 Fol me Erionin", "🗓 Rezervo konsultë"],
      ["❓ FAQ", "📄 CV-ja ime"],
-     ["🎴 Kartvizita ime", "🔐 Aksesi im"]],
+     ["🎴 Kartvizita ime", "🔐 Aksesi im", "🌍 Gjuha"]],
     resize_keyboard=True,
 )
+CLIENT_KB_EN = ReplyKeyboardMarkup(
+    [["💼 Services", "🗂 Work samples"],
+     ["📝 Start a project", "🚧 My project"],
+     ["💬 Talk to Erion", "🗓 Book a consultation"],
+     ["❓ FAQ", "📄 My CV"],
+     ["🎴 My card", "🔐 My access", "🌍 Language"]],
+    resize_keyboard=True,
+)
+
+
+def client_kb(lang: str = "sq"):
+    """Tastiera e klientit sipas gjuhës së tij (F3)."""
+    return CLIENT_KB_EN if lang == "en" else CLIENT_KB
+
+
+# Etiketat e menusë në të dyja gjuhët → veprimi (F3). Emrat e duhur të
+# projekteve/shërbimeve nuk ndryshojnë; përkthehen vetëm fjalët përshkruese.
+MENU_ROUTES = {
+    "💼 Shërbimet": "services", "💼 Services": "services",
+    "🗂 Shembuj pune": "works", "🗂 Work samples": "works",
+    "🎴 Kartvizita ime": "card", "🎴 Kartvizita": "card",
+    "🎴 My card": "card",
+    "🔐 Aksesi im": "access", "🔐 My access": "access",
+    "💬 Fol me Erionin": "talk", "💬 Talk to Erion": "talk",
+    "📝 Nis një projekt": "brief", "📝 Start a project": "brief",
+    "🚧 Projekti im": "projects", "🚧 My project": "projects",
+    "🗓 Rezervo konsultë": "booking", "🗓 Book a consultation": "booking",
+    "❓ FAQ": "faq",
+    "📄 CV-ja ime": "cv", "📄 My CV": "cv",
+    "🌍 Gjuha": "lang", "🌍 Language": "lang",
+}
 
 LOCK_TEXT = (
     "🔐 <b>ERION NEZHA — PRIVATE ACCESS</b>\n"
@@ -368,6 +425,340 @@ WELCOME_CLIENT = (
 )
 
 
+# ================================================================
+# F3 — NDËRFAQJA DY GJUHËSH (sq / en)
+# Çdo tekst statik që sheh klienti/vizitori kalon nga STR + t().
+# Tekstet e adminit mbeten shqip; përmbajtja e të dhënave (shënimet,
+# broadcast-i, titujt e projekteve, statusi) mbetet siç u shkrua.
+# ================================================================
+SERVICES_EN = [
+    ("web", "🌐 Website & e-commerce"),
+    ("app", "📱 Android app"),
+    ("bot", "🤖 Telegram bot & automation"),
+    ("design", "🎨 Graphic design & video"),
+    ("marketing", "📣 Digital marketing"),
+    ("other", "✨ Something else"),
+]
+SERVICE_DETAILS_EN = {
+    "web": "🌐 <b>Websites & e-commerce</b>\nShowcase sites, online shops, booking pages or a custom platform — premium design, fast, optimized for Google and for phones.",
+    "app": "📱 <b>Android app</b>\nFrom the idea to publishing on Google Play: design, development, testing and complete delivery of your app.",
+    "bot": "🤖 <b>Telegram bots & automation</b>\nBots for your business (orders, notifications, customer support) and automations that save you hours of work every week.",
+    "design": "🎨 <b>Graphic design & video</b>\nLogo and visual identity, graphics for social media and app stores, video editing with animated captions.",
+    "marketing": "📣 <b>Digital marketing</b>\nContent strategy, online presence management and campaigns that bring real clients, not just views.",
+    "other": "✨ <b>Something else</b>\nHave another idea in mind? Tell me through the project form and we'll discuss it together.",
+}
+BUDGETS_EN = ["Modest", "Moderate", "Serious", "Not sure yet"]
+
+WORK_CATEGORIES_EN = [
+    ("apps", "📱 Mobile apps"),
+    ("web", "🌐 Web platforms"),
+    ("ai", "🤖 Bots & AI"),
+]
+WORKS_EN = {
+    "apps": [
+        ("📺 ERION TV — the IPTV app", "https://play.google.com/store/apps/details?id=com.streamvision.app"),
+        ("📡 Dream TV AL — live TV and movies on your phone", "https://play.google.com/store/apps/details?id=blackmaster.ex"),
+        ("🎵 Radio Shqip — Albanian radio stations live", "https://play.google.com/store/apps/details?id=com.erionxx.radioshqip"),
+        ("📷 QR Code Scanner — fast QR & barcode scanning", "https://play.google.com/store/apps/details?id=com.erionxx.qrscanner"),
+        ("📶 Speedtest Pro — internet speed testing", "https://play.google.com/store/apps/details?id=com.erionxx.speedtestpro"),
+    ],
+    "web": [
+        ("📚 Lexo Libra — the Albanian digital library", "https://lexolibra.netlify.app"),
+        ("📉 ÇmimRadar — the price comparison tool", "https://cmimradar.netlify.app"),
+        ("🛒 MarketRadar — supermarket prices in Tirana", "https://marketradar-tirana.netlify.app"),
+        ("💊 FarmaciRadar — the online pharmacy comparison", "https://farmaciradar.netlify.app"),
+        ("🎬 FilmaHD — movie and series catalogue", "https://filma12hd.vercel.app"),
+        ("🛍 KlikoBli — the online store", "https://klikobli.netlify.app"),
+        ("✨ VELTRIX — creative visual showcase", "https://veltrix-visuals.netlify.app"),
+        ("🌐 Erion Nezha's full portfolio", "https://erionxx1.netlify.app"),
+        ("🎴 Digital business card", "https://erionnezha.github.io/erionxx-business-card/"),
+    ],
+    "ai": [
+        ("💬 Dertli Bot — the Albanian AI assistant", "https://dertlibot.netlify.app"),
+        ("🤖 JARVIS PC — the voice assistant for your computer", "https://github.com/ErionNezha/jarvis-pc"),
+    ],
+}
+
+FAQ_TEXT_EN = (
+    "❓ <b>Frequently asked questions</b>\n\n"
+    "<b>How long does a project take?</b>\n"
+    "It depends on the project's size and the features you need. Once "
+    "you complete the brief, the deadline is agreed together and fixed "
+    "in the agreement before work starts.\n\n"
+    "<b>How does payment work?</b>\n"
+    "Payment is made in stages, as agreed: an advance to start the "
+    "work, and the rest along the way, up to the final delivery.\n\n"
+    "<b>What do I need to provide as a client?</b>\n"
+    "The brief answers and your materials — logo, texts, photos and "
+    "the necessary access. I take care of everything else.\n\n"
+    "<b>Is there support and maintenance after delivery?</b>\n"
+    "Yes — after delivery, support is included for any issue arising "
+    "from the delivered work. If you'd like long-term peace of mind, "
+    "there are optional maintenance packages too.\n\n"
+    "<b>Can I ask for revisions?</b>\n"
+    "Yes — revisions within the agreed scope are included. Bigger "
+    "changes, outside the initial scope, are discussed together "
+    "before they're made."
+)
+
+REVIEWS_HEADER_EN = "⭐ <b>Reviews from real users</b>"
+REVIEWS_PLAY_EN = (
+    "⭐⭐⭐⭐⭐\n"
+    "Loved the design and how easy the app is to navigate.\n"
+    "<i>— Google Play review (ERION TV)</i>\n\n"
+    "⭐⭐⭐⭐⭐\n"
+    "Plenty of channels and stable playback, without interruptions.\n"
+    "<i>— Google Play review (ERION TV)</i>"
+)
+
+PROJECT_STAGES_EN = ["Brief", "Design", "Development", "Testing", "Delivery"]
+
+STR = {
+    "sq": {
+        "lock_text": LOCK_TEXT,
+        "lock_note_need_code": "🔒 Së pari nevojitet kodi i aksesit.",
+        "lock_note_private": "🔒 Ky bot është privat. Hyrja bëhet vetëm me kod personal.",
+        "locked_alert": "Aksesi është i kyçur.",
+        "lock_btn_code": "🔑 Kam kod aksesi",
+        "lock_btn_req": "📝 Kërkoj shërbim",
+        "code_prompt": "🔑 Shkruaj kodin tënd të aksesit (formati: <code>EN-XXXX-XXXX</code>):",
+        "locked_temp_code": "⏳ Llogaria jote është e kyçur përkohësisht nga tentativat e gabura. Provo më vonë.",
+        "locked_temp": "⏳ Llogaria jote është e kyçur përkohësisht. Provo më vonë.",
+        "code_accepted": "✅ <b>Kodi u pranua.</b> Aksesi yt është aktiv deri më <b>{date}</b>.",
+        "gate_fail": GATE_FAIL_TEXT,
+        "too_many": "🔒 Shumë tentativa të gabuara — llogaria u kyç për një orë.",
+        "code_retry": "Shkruaj sërish kodin, ose /anulo për t'u kthyer.",
+        "req_title": "📝 <b>Kërkesë për shërbim</b>\n\nÇfarë shërbimi kërkon?",
+        "req_name": "Si e ke <b>emrin</b> (emër mbiemër)?",
+        "req_desc": "Përshkruaje shkurtimisht <b>çfarë të duhet</b>:",
+        "req_contact": "Një <b>kontakt</b> ku mund të të shkruaj Erioni (numër telefoni ose email). Mund ta kapërcesh — biseda vazhdon këtu.",
+        "skip": "⏭ Kapërce",
+        "req_sent": "✅ <b>Kërkesa jote u dërgua.</b>\n\nErioni e shqyrton personalisht. Kur të miratohet, boti hapet automatikisht për ty dhe merr njoftim këtu.\n\nPërgjigjja zakonisht vjen brenda ditës.",
+        "req_pending": REQ_PENDING_TEXT,
+        "req_daily": REQ_DAILY_TEXT,
+        "welcome": WELCOME_CLIENT,
+        "approved_welcome": "🎉 <b>Kërkesa jote u MIRATUA!</b>\n\nPortali yt privat është aktiv deri më <b>{date}</b>.\n\n",
+        "services_header": "💼 <b>Shërbimet</b> — zgjidh për detaje:",
+        "service_start_btn": "📝 Nis projekt të këtij lloji",
+        "works_header": WORKS_HEADER,
+        "works_cat_title": "🗂 <b>{title}</b> — projekte live:",
+        "back": "⬅ Kthehu",
+        "reviews_btn": "⭐ Vlerësime",
+        "faq": FAQ_TEXT,
+        "cv_caption": CV_CAPTION,
+        "cv_missing": "📄 CV-ja për momentin s'është e disponueshme këtu — kërkoja Erionit me 💬 <b>Fol me Erionin</b>.",
+        "cv_failed": "📄 CV-ja s'u dërgua dot tani — kërkoja Erionit me 💬 <b>Fol me Erionin</b>.",
+        "card_text": "🎴 <b>Erion Nezha</b> — Software Developer\nTiranë, Shqipëri\n\nRuaji kontaktet e mia:",
+        "card_img_btn": "🖼 Karta si imazh",
+        "card_img_caption": CARD_IMG_CAPTION,
+        "card_img_missing": "🖼 Karta si imazh për momentin s'është e disponueshme — përdor lidhjet e kartvizitës më sipër.",
+        "card_img_failed": "🖼 Karta s'u dërgua dot tani — përdor lidhjet e kartvizitës më sipër.",
+        "access_admin": "🔐 Je admini — akses i pakufizuar.",
+        "access_text": "🔐 <b>Aksesi yt</b>\n\n• Statusi: ✅ Aktiv\n• Skadon më: <b>{date}</b> (edhe {days} ditë)\n• Shërbimi: {service}\n\nPër zgjatje, shkruaj Erionit me 💬 <b>Fol me Erionin</b>.",
+        "brief_title": "📝 <b>Projekt i ri</b>\n\nÇfarë lloj projekti është?",
+        "brief_desc_q": "Përshkruaje projektin: çfarë duhet të bëjë, për kë është, çfarë faqesh/funksionesh mendon?",
+        "brief_budget_q": "Buxheti i përafërt?",
+        "brief_deadline_q": "Kur të duhet gati? (p.sh. brenda muajit / kam një datë)",
+        "brief_contact_q": "Kontakti yt (telefon ose email):",
+        "brief_sent": "✅ <b>Brief-i u dërgua!</b>\n\nErioni e lexon dhe të përgjigjet këtu me hapat e radhës dhe preventivin. Faleminderit për besimin!",
+        "brief_daily": BRIEF_DAILY_TEXT,
+        "projects_header": PROJECTS_HEADER,
+        "projects_empty": PROJECTS_EMPTY,
+        "project_updated": "🕒 Përditësuar më: {date}",
+        "project_update_title": "🚧 <b>Përditësim projekti</b>",
+        "project_finish": CLIENT_FINISH_TEXT,
+        "book_start": BOOK_START_TEXT,
+        "book_pick_slot": BOOK_PICK_SLOT_TEXT,
+        "book_no_slots": BOOK_NO_SLOTS_TEXT,
+        "book_pending": BOOK_PENDING_TEXT,
+        "book_sent": BOOK_SENT_TEXT,
+        "book_taken": BOOK_TAKEN_TEXT,
+        "book_approved": BOOK_APPROVED_TEXT,
+        "book_rejected": BOOK_REJECTED_TEXT,
+        "reminder_booking_client": REMINDER_BOOKING_CLIENT,
+        "expiry_client": EXPIRY_CLIENT_TEXT,
+        "talk_start": "💬 <b>Je në bisedë direkte me Erionin.</b>\nShkruaj mesazhin tënd — i vjen atij menjëherë dhe përgjigjja të kthehet këtu.\nPër t'u kthyer te menuja: /ndalo",
+        "talk_stop": "U ktheve te menuja 👇",
+        "talk_sent": "✔️ U dërgua te Erioni.",
+        "talk_send_fail": "⚠️ Dërgimi dështoi — provo sërish.",
+        "talk_media_hint": "Për të dërguar foto, zë ose dokumente, aktivizo më parë 💬 <b>Fol me Erionin</b> nga menuja.",
+        "flow_needs_text": "Kjo rrjedhë pret tekst — shkruaj përgjigjen, ose /anulo për t'u kthyer.",
+        "menu_prompt": "Zgjidh nga menuja më poshtë 👇",
+        "admin_says": "💬 <b>Erioni:</b>\n{text}",
+        "cancelled": "U anulua.",
+        "lang_choose": "🌍 <b>Gjuha / Language</b>\n\nZgjidh gjuhën e ndërfaqes:",
+        "review_ask": "⭐ <b>Si e vlerëson punën për projektin «{title}»?</b>\n\nPrek yjet më poshtë — vlerësimi yt më ndihmon të përmirësohem dhe, me miratimin tim, shfaqet te vlerësimet e klientëve.",
+        "review_skipped": "👍 Në rregull — faleminderit gjithsesi!",
+        "review_skip": "Kapërce",
+        "review_comment_q": "⭐ Faleminderit! Nëse do, shto një koment të shkurtër (ose kapërce):",
+        "review_thanks": "⭐ <b>Faleminderit për vlerësimin!</b>\n\nVlerësimi yt u ruajt dhe, pas shqyrtimit, mund të shfaqet te vlerësimet e klientëve.",
+        "ics_caption": "📅 Shtoje konsultën në kalendarin tënd me një prekje — hape këtë file nga telefoni yt.",
+        "pdf_caption": "🧾 Propozimi paraprak i projektit tënd — përmbledhje pa angazhim. Oferta përfundimtare vjen pas diskutimit tonë.",
+        "gcal_btn": "📅 Google Calendar",
+    },
+    "en": {
+        "lock_text": (
+            "🔐 <b>ERION NEZHA — PRIVATE ACCESS</b>\n"
+            "━━━━━━━━━━━━━━━\n"
+            "This is the private client portal of <b>Erion Nezha</b>.\n\n"
+            "Access is granted <b>only with a personal code</b>, which is "
+            "given after the first contact about a service.\n\n"
+            "If you don't have a code yet, request your service here — "
+            "every request is reviewed personally by Erion."
+        ),
+        "lock_note_need_code": "🔒 First, your access code is needed.",
+        "lock_note_private": "🔒 This bot is private. Entry is only possible with a personal code.",
+        "locked_alert": "Access is locked.",
+        "lock_btn_code": "🔑 I have an access code",
+        "lock_btn_req": "📝 Request a service",
+        "code_prompt": "🔑 Type your access code (format: <code>EN-XXXX-XXXX</code>):",
+        "locked_temp_code": "⏳ Your account is temporarily locked because of wrong attempts. Please try again later.",
+        "locked_temp": "⏳ Your account is temporarily locked. Please try again later.",
+        "code_accepted": "✅ <b>Code accepted.</b> Your access is active until <b>{date}</b>.",
+        "gate_fail": (
+            "❌ <b>The code was not accepted.</b>\n\n"
+            "Check that you typed it correctly (format: EN-XXXX-XXXX) "
+            "and try again. If Erion gave you the code and it still "
+            "isn't accepted, message him on Instagram: @erjonixx"
+        ),
+        "too_many": "🔒 Too many wrong attempts — the account is locked for a while.",
+        "code_retry": "Type the code again, or /anulo to go back.",
+        "req_title": "📝 <b>Service request</b>\n\nWhat service are you looking for?",
+        "req_name": "What is your <b>full name</b>?",
+        "req_desc": "Briefly describe <b>what you need</b>:",
+        "req_contact": "A <b>contact</b> where Erion can reach you (phone number or email). You can skip this — the conversation continues here.",
+        "skip": "⏭ Skip",
+        "req_sent": "✅ <b>Your request has been sent.</b>\n\nErion reviews every request personally. When approved, the bot opens for you automatically and you'll be notified here.\n\nReplies usually arrive within the day.",
+        "req_pending": "⏳ <b>You already have a request pending.</b>\n\nYour earlier request was sent and is waiting for Erion's reply — you can't send another one in the meantime. When it's reviewed, you'll be notified here.",
+        "req_daily": "⏳ <b>You've reached the daily request limit.</b>\n\nService requests have a daily limit. Please try again tomorrow — or message Erion on Instagram: @erjonixx",
+        "welcome": "✨ <b>Welcome to your private portal, {name}.</b>\n\nHere you'll find the services, work samples and the form to start your project. Your messages come straight to me.\n\n{status}\n\n— <i>Erion Nezha</i>",
+        "approved_welcome": "🎉 <b>Your request was APPROVED!</b>\n\nYour private portal is active until <b>{date}</b>.\n\n",
+        "services_header": "💼 <b>Services</b> — pick one for details:",
+        "service_start_btn": "📝 Start a project of this kind",
+        "works_header": "🗂 <b>Real work samples</b> — finished, live projects.\nPick a category:",
+        "works_cat_title": "🗂 <b>{title}</b> — live projects:",
+        "back": "⬅ Back",
+        "reviews_btn": "⭐ Reviews",
+        "faq": FAQ_TEXT_EN,
+        "cv_caption": "📄 Erion Nezha's CV — Software Developer\nExperience, skills and projects — in one document.",
+        "cv_missing": "📄 The CV isn't available here right now — ask Erion via 💬 <b>Talk to Erion</b>.",
+        "cv_failed": "📄 The CV couldn't be sent right now — ask Erion via 💬 <b>Talk to Erion</b>.",
+        "card_text": "🎴 <b>Erion Nezha</b> — Software Developer\nTirana, Albania\n\nSave my contacts:",
+        "card_img_btn": "🖼 Card as image",
+        "card_img_caption": "🎴 Erion Nezha's business card — save it or forward it to someone looking for my services.\nScanning the QR code leads to the private client portal.",
+        "card_img_missing": "🖼 The card image isn't available right now — please use the card links above.",
+        "card_img_failed": "🖼 The card couldn't be sent right now — please use the card links above.",
+        "access_admin": "🔐 You are the admin — unlimited access.",
+        "access_text": "🔐 <b>Your access</b>\n\n• Status: ✅ Active\n• Expires on: <b>{date}</b> ({days} days left)\n• Service: {service}\n\nTo extend it, message Erion via 💬 <b>Talk to Erion</b>.",
+        "brief_title": "📝 <b>New project</b>\n\nWhat kind of project is it?",
+        "brief_desc_q": "Describe the project: what should it do, who is it for, which pages or features do you have in mind?",
+        "brief_budget_q": "Roughly, what is your budget?",
+        "brief_deadline_q": "When do you need it ready? (e.g. within the month / I have a date)",
+        "brief_contact_q": "Your contact (phone or email):",
+        "brief_sent": "✅ <b>Your brief has been sent!</b>\n\nErion will read it and reply here with the next steps and the quote. Thank you for your trust!",
+        "brief_daily": "⏳ <b>You've reached the daily brief limit.</b>\n\nProject briefs have a daily limit. A new brief can be started tomorrow — for anything urgent use 💬 <b>Talk to Erion</b>.",
+        "projects_header": "🚧 <b>My project</b> — work progress:",
+        "projects_empty": "🚧 <b>My project</b>\n\nYou don't have an active project yet.\n\nWhen you start a project with 📝 <b>Start a project</b>, you'll see its progress here, stage by stage, all the way to delivery.",
+        "project_updated": "🕒 Updated on: {date}",
+        "project_update_title": "🚧 <b>Project update</b>",
+        "project_finish": "🎉 <b>Your project is finished!</b>\n\n🚧 <b>{title}</b>\n\nThe work has been delivered successfully. Thank you for your trust — for anything else, my door here is always open. ✨",
+        "book_start": "🗓 <b>Book a consultation</b>\n\nPick the service you'd like to talk about:",
+        "book_pick_slot": "🗓 <b>Pick a time slot</b> that suits you:",
+        "book_no_slots": "🗓 <b>Book a consultation</b>\n\nThere are no free slots at the moment.\n\nTry again later, or write directly via 💬 <b>Talk to Erion</b> — we'll find a time together.",
+        "book_pending": "⏳ <b>You already have a consultation request pending.</b>\n\nWhen Erion reviews it, you'll be notified here. For anything urgent use 💬 <b>Talk to Erion</b>.",
+        "book_sent": "✅ <b>Your consultation request has been sent.</b>\n\nErion will review it and confirm the time here. Thank you!",
+        "book_taken": "⚠️ That slot was just taken by someone else.\n\nPlease pick another slot:",
+        "book_approved": "✅ <b>Consultation confirmed!</b>\n\n💼 Service: {service}\n🗓 Time: <b>{slot}</b>\n\nYou'll receive a reminder before the meeting. If the time no longer suits you, let Erion know via 💬 <b>Talk to Erion</b>.",
+        "book_rejected": "🗓 <b>About your consultation request</b>\n\nSorry — the slot <b>{slot}</b> for {service} is no longer possible.\n\nTry another slot under 🗓 <b>Book a consultation</b>, or write to Erion via 💬 <b>Talk to Erion</b> and we'll find one together.",
+        "reminder_booking_client": "⏰ <b>Reminder about your consultation</b>\n\n💼 Service: {service}\n🗓 Time: <b>{slot}</b>\n\nErion is expecting you here in this chat — be ready a little before the time. If you can't make it, let him know via 💬 <b>Talk to Erion</b>.",
+        "expiry_client": "⏰ <b>Your access is coming to an end</b>\n\nYour private portal expires on <b>{date}</b>.\n\nIf you'd like to extend it, or you have a new project in mind, message Erion via 💬 <b>Talk to Erion</b>.\n\nThank you for being one of my clients! ✨",
+        "talk_start": "💬 <b>You are in a direct chat with Erion.</b>\nWrite your message — it reaches him right away and his reply comes back here.\nTo return to the menu: /ndalo",
+        "talk_stop": "You're back at the menu 👇",
+        "talk_sent": "✔️ Sent to Erion.",
+        "talk_send_fail": "⚠️ Sending failed — please try again.",
+        "talk_media_hint": "To send photos, voice or documents, first turn on 💬 <b>Talk to Erion</b> from the menu.",
+        "flow_needs_text": "This flow expects text — type your answer, or /anulo to go back.",
+        "menu_prompt": "Pick from the menu below 👇",
+        "admin_says": "💬 <b>Erion:</b>\n{text}",
+        "cancelled": "Cancelled.",
+        "lang_choose": "🌍 <b>Gjuha / Language</b>\n\nChoose the interface language:",
+        "review_ask": "⭐ <b>How would you rate the work on the project “{title}”?</b>\n\nTap the stars below — your review helps me improve and, with my approval, it may appear among the client reviews.",
+        "review_skipped": "👍 No problem — thank you anyway!",
+        "review_skip": "Skip",
+        "review_comment_q": "⭐ Thank you! If you'd like, add a short comment (or skip):",
+        "review_thanks": "⭐ <b>Thank you for your review!</b>\n\nYour review was saved and, after a quick check, it may appear among the client reviews.",
+        "ics_caption": "📅 Add the consultation to your calendar with one tap — open this file on your phone.",
+        "pdf_caption": "🧾 The preliminary proposal for your project — a non-binding summary. The final offer follows our discussion.",
+        "gcal_btn": "📅 Google Calendar",
+    },
+}
+
+
+def t(lang: str, key: str, **kw) -> str:
+    """Teksti statik sipas gjuhës; 'sq' është gjithmonë fallback-u."""
+    table = STR.get(lang) or STR["sq"]
+    s = table.get(key)
+    if s is None:
+        s = STR["sq"][key]
+    return s.format(**kw) if kw else s
+
+
+def ulang(user) -> str:
+    """Gjuha e ndërfaqes për përdoruesin (admini gjithmonë shqip)."""
+    if user is None or is_admin(user):
+        return "sq"
+    return store.get_lang(user.id)
+
+
+def services_for(lang: str):
+    return SERVICES_EN if lang == "en" else SERVICES
+
+
+def svc_name(sid: str, lang: str = "sq") -> str:
+    return dict(services_for(lang)).get(sid, sid)
+
+
+def svc_details(sid: str, lang: str = "sq") -> str:
+    table = SERVICE_DETAILS_EN if lang == "en" else SERVICE_DETAILS
+    return table.get(sid, "")
+
+
+def budgets_for(lang: str):
+    return BUDGETS_EN if lang == "en" else BUDGETS
+
+
+def work_categories_for(lang: str):
+    return WORK_CATEGORIES_EN if lang == "en" else WORK_CATEGORIES
+
+
+def works_for(lang: str):
+    return WORKS_EN if lang == "en" else WORKS
+
+
+def stages_for(lang: str):
+    return PROJECT_STAGES_EN if lang == "en" else PROJECT_STAGES
+
+
+def reviews_text(lang: str = "sq") -> str:
+    """Ekrani i vlerësimeve: vlerësimet e miratuara të botit (më të
+    rejat sipër) + përmbledhjet e Google Play që mbeten gjithmonë."""
+    if lang == "en":
+        header, play = REVIEWS_HEADER_EN, REVIEWS_PLAY_EN
+    else:
+        header, play = REVIEWS_HEADER, REVIEWS_PLAY
+    parts = [header]
+    for r in store.list_reviews(status="approved")[:5]:
+        entry = "⭐" * int(r.get("stars") or 5)
+        if r.get("text"):
+            entry += "\n" + r["text"]
+        first = (r.get("name") or "").split()[0] if r.get("name") else ""
+        if first:
+            entry += f"\n<i>— {first}</i>"
+        parts.append(entry)
+    parts.append(play)
+    return "\n\n".join(parts)
+
+
 # ---------------------------------------------------------------- ndihmës
 def is_admin(user) -> bool:
     return bool(user) and user.id == ADMIN_ID
@@ -388,30 +779,42 @@ def fmt_date(iso_s):
     return dt.strftime("%d.%m.%Y") if dt else "—"
 
 
-def lock_kb():
+def lock_kb(lang: str = "sq"):
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔑 Kam kod aksesi", callback_data="gate:code")],
-        [InlineKeyboardButton("📝 Kërkoj shërbim", callback_data="gate:req")],
+        [InlineKeyboardButton(t(lang, "lock_btn_code"), callback_data="gate:code")],
+        [InlineKeyboardButton(t(lang, "lock_btn_req"), callback_data="gate:req")],
+        [InlineKeyboardButton("🇦🇱 Shqip", callback_data="lang:sq"),
+         InlineKeyboardButton("🇬🇧 English", callback_data="lang:en")],
     ])
 
 
+def lang_kb():
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("🇦🇱 Shqip", callback_data="lang:sq"),
+        InlineKeyboardButton("🇬🇧 English", callback_data="lang:en"),
+    ]])
+
+
 async def show_lock(update: Update, context: ContextTypes.DEFAULT_TYPE, note: str = ""):
-    text = (note + "\n\n" + LOCK_TEXT) if note else LOCK_TEXT
+    lang = ulang(update.effective_user)
+    body = t(lang, "lock_text")
+    text = (note + "\n\n" + body) if note else body
     if update.callback_query:
         await update.callback_query.message.reply_text(
-            text, parse_mode="HTML", reply_markup=lock_kb())
+            text, parse_mode="HTML", reply_markup=lock_kb(lang))
     else:
         await update.effective_message.reply_text(
-            text, parse_mode="HTML", reply_markup=lock_kb())
+            text, parse_mode="HTML", reply_markup=lock_kb(lang))
 
 
 async def show_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
+    lang = ulang(user)
     name = (user.first_name or "klient").strip()
     msg = update.effective_message
     await msg.reply_text(
-        WELCOME_CLIENT.format(name=name, status=store.get_status()),
-        parse_mode="HTML", reply_markup=CLIENT_KB)
+        t(lang, "welcome", name=name, status=store.get_status()),
+        parse_mode="HTML", reply_markup=client_kb(lang))
     if is_admin(user):
         await msg.reply_text(
             "🛠 <b>Panel admini</b>\n"
@@ -431,7 +834,12 @@ async def show_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/slotet — oraret e konsultave dhe gjendja e tyre\n"
             "/slot_fshi &lt;slot_id&gt; — fshin një orar të lirë\n"
             "/njoftim &lt;teksti&gt; — broadcast te të gjithë klientët aktivë\n"
-            "/pergjigju &lt;user_id&gt; — mesazhi yt tjetër i shkon atij klienti",
+            "/pergjigju &lt;user_id&gt; — mesazhi yt tjetër i shkon atij klienti\n"
+            "/vleresime — vlerësimet e klientëve në pritje (publiko/refuzo)\n"
+            "/mireseardhje — vendos/ndryshon mesazhin zanor të mirëseardhjes "
+            "(klientët e rinj e marrin automatikisht pas aktivizimit)\n"
+            "/hiq_mireseardhjen — heq mesazhin zanor të mirëseardhjes\n"
+            "/raport — raporti javor (këtë javë) + pikat në pritje",
             parse_mode="HTML")
 
 
@@ -456,6 +864,75 @@ async def send_backup(context: ContextTypes.DEFAULT_TYPE, caption: str):
         log.warning("backup dështoi: %s", e)
 
 
+# ---------------------------------------------------------------- F3: gjuha
+async def show_lang_chooser(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """🌍 Gjuha / Language — zgjedhja e gjuhës nga zona e klientit."""
+    if not await guard_client(update):
+        return
+    lang = ulang(update.effective_user)
+    await update.effective_message.reply_text(
+        t(lang, "lang_choose"), parse_mode="HTML", reply_markup=lang_kb())
+
+
+async def lang_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Ndërrimi i gjuhës (dera + zona e klientit): zgjedhja ruhet te
+    përdoruesi dhe kalon në regjistrin e klientit pas aktivizimit."""
+    q = update.callback_query
+    await q.answer()
+    code = (q.data or "").split(":", 1)[1] if ":" in (q.data or "") else "sq"
+    store.set_lang(q.from_user.id, code)
+    if has_access(q.from_user):
+        await show_home(update, context)
+    else:
+        await show_lock(update, context)
+
+
+# ---------------------------------------------------------------- F5: zëri i mirëseardhjes
+async def send_welcome_voice(context: ContextTypes.DEFAULT_TYPE, user_id: int):
+    """Dërgon mesazhin zanor të mirëseardhjes (nëse admini e ka
+    vendosur). Dështimi (file_id i vjetër etj.) kapet në heshtje —
+    aktivizimi s'prishet kurrë prej tij."""
+    fid = store.get_welcome_voice()
+    if not fid:
+        return
+    try:
+        await context.bot.send_voice(user_id, voice=fid)
+    except Exception as e:
+        log.warning("zëri i mirëseardhjes s'u dërgua te %s: %s", user_id, e)
+
+
+async def adm_voice_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """F5: /mireseardhje — tregon gjendjen dhe kap zërin e radhës
+    të adminit si mesazh mirëseardhjeje për klientët e rinj."""
+    if not is_admin(update.effective_user):
+        return
+    fid = store.get_welcome_voice()
+    state = ("✅ <b>Është i vendosur</b> — klientët e rinj e marrin "
+             "automatikisht pas aktivizimit." if fid else
+             "ℹ️ <b>S'ka ende</b> mesazh zanor mirëseardhjeje.")
+    context.user_data["capture_voice"] = True
+    await update.message.reply_text(
+        "🎙 <b>Mesazhi zanor i mirëseardhjes</b>\n\n"
+        f"{state}\n\n"
+        "Dërgo tani një <b>mesazh zanor</b> — ai do të ruhet dhe "
+        "klientët e rinj do ta marrin pas aktivizimit.\n"
+        "/anulo për ta lënë siç është.", parse_mode="HTML")
+
+
+async def adm_voice_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """F5: /hiq_mireseardhjen — pastron zërin e mirëseardhjes."""
+    if not is_admin(update.effective_user):
+        return
+    if store.get_welcome_voice():
+        store.set_welcome_voice(None)
+        await update.message.reply_text(
+            "🎙 Mesazhi zanor i mirëseardhjes u hoq — klientët e rinj "
+            "s'e marrin më.")
+    else:
+        await update.message.reply_text(
+            "🎙 S'ka mesazh zanor mirëseardhjeje të vendosur.")
+
+
 # ---------------------------------------------------------------- /start
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -478,25 +955,22 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def gate_code_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
+    lang = ulang(q.from_user)
     if has_access(q.from_user):
         await show_home(update, context)
         return
     if store.is_locked(q.from_user.id):
-        await q.message.reply_text(
-            "⏳ Llogaria jote është e kyçur përkohësisht nga tentativat e "
-            "gabura. Provo më vonë.")
+        await q.message.reply_text(t(lang, "locked_temp_code"))
         return
     context.user_data["flow"] = {"kind": "code"}
-    await q.message.reply_text(
-        "🔑 Shkruaj kodin tënd të aksesit (formati: <code>EN-XXXX-XXXX</code>):",
-        parse_mode="HTML")
+    await q.message.reply_text(t(lang, "code_prompt"), parse_mode="HTML")
 
 
 async def try_redeem(update: Update, context: ContextTypes.DEFAULT_TYPE, code: str):
     user = update.effective_user
+    lang = ulang(user)
     if store.is_locked(user.id):
-        await update.effective_message.reply_text(
-            "⏳ Llogaria jote është e kyçur përkohësisht. Provo më vonë.")
+        await update.effective_message.reply_text(t(lang, "locked_temp"))
         return
     status, rec = store.redeem_code(code, user.id)
     if status == "ok":
@@ -504,14 +978,16 @@ async def try_redeem(update: Update, context: ContextTypes.DEFAULT_TYPE, code: s
         store.activate_client(user.id, user.first_name or "", user.username or "",
                               "", DEFAULT_DAYS, via="code",
                               expires_at=parse_iso(rec["expires_at"]))
+        lang = ulang(user)  # regjistri i ri mund ta ketë gjuhën të ruajtur
         await update.effective_message.reply_text(
-            "✅ <b>Kodi u pranua.</b> Aksesi yt është aktiv deri më "
-            f"<b>{fmt_date(rec['expires_at'])}</b>.", parse_mode="HTML")
+            t(lang, "code_accepted", date=fmt_date(rec["expires_at"])),
+            parse_mode="HTML")
         await notify_admin(context,
                            f"🔓 <b>Klient i ri u zhbllokua me kod</b>\n"
                            f"👤 {user.first_name or ''} (@{user.username or '—'}, id {user.id})\n"
                            f"📝 Shënimi i kodit: {rec.get('note') or '—'}")
         await show_home(update, context)
+        await send_welcome_voice(context, user.id)  # F5
     else:
         await _gate_fail(update, context, status)
 
@@ -520,9 +996,10 @@ async def _gate_fail(update: Update, context: ContextTypes.DEFAULT_TYPE, status:
     """Dështim te dera: vizitori sheh VETËM mesazhin gjenerik (Fiks 3);
     arsyeja e saktë ruhet dhe i raportohet vetëm adminit."""
     user = update.effective_user
+    lang = ulang(user)
     who = f"{user.first_name or ''} (@{user.username or '—'}, id {user.id})"
     locked = store.register_fail(user.id, status=status)
-    await update.effective_message.reply_text(GATE_FAIL_TEXT, parse_mode="HTML")
+    await update.effective_message.reply_text(t(lang, "gate_fail"), parse_mode="HTML")
     if status == "bound_other":
         # sinjali i vjedhjes/përcjelljes së kodit — njoftim i menjëhershëm
         await notify_admin(
@@ -533,8 +1010,7 @@ async def _gate_fail(update: Update, context: ContextTypes.DEFAULT_TYPE, status:
             "i mundshëm përcjelljeje ose vjedhjeje të kodit. Vizitorit iu "
             "tregua vetëm mesazhi gjenerik.")
     if locked:
-        await update.effective_message.reply_text(
-            "🔒 Shumë tentativa të gabuara — llogaria u kyç për një orë.")
+        await update.effective_message.reply_text(t(lang, "too_many"))
         last = store.last_fail_status(user.id) or status
         label = FAIL_STATUS_LABELS.get(last, last or "—")
         await notify_admin(
@@ -549,35 +1025,35 @@ async def code_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if has_access(update.effective_user) or store.is_locked(update.effective_user.id):
         context.user_data.pop("flow", None)
         return
-    await update.message.reply_text(
-        "Shkruaj sërish kodin, ose /anulo për t'u kthyer.")
+    await update.message.reply_text(t(ulang(update.effective_user), "code_retry"))
 
 
 # ---------------------------------------------------------------- kërkesa për shërbim
-def service_kb(prefix: str):
+def service_kb(prefix: str, lang: str = "sq"):
     rows = [[InlineKeyboardButton(label, callback_data=f"{prefix}:{sid}")]
-            for sid, label in SERVICES]
+            for sid, label in services_for(lang)]
     return InlineKeyboardMarkup(rows)
 
 
 async def gate_req_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
+    lang = ulang(q.from_user)
     if has_access(q.from_user):
         await show_home(update, context)
         return
     block = store.request_block(q.from_user.id)  # anti-spam (Fiks 2)
     if block == "pending":
-        await q.message.reply_text(REQ_PENDING_TEXT, parse_mode="HTML")
+        await q.message.reply_text(t(lang, "req_pending"), parse_mode="HTML")
         return
     if block == "daily":
-        await q.message.reply_text(REQ_DAILY_TEXT, parse_mode="HTML")
+        await q.message.reply_text(t(lang, "req_daily"), parse_mode="HTML")
         return
     context.user_data["flow"] = {"kind": "req", "step": "service"}
     context.user_data["req"] = {}
     await q.message.reply_text(
-        "📝 <b>Kërkesë për shërbim</b>\n\nÇfarë shërbimi kërkon?",
-        parse_mode="HTML", reply_markup=service_kb("svc"))
+        t(lang, "req_title"), parse_mode="HTML",
+        reply_markup=service_kb("svc", lang))
 
 
 async def req_service_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -590,28 +1066,25 @@ async def req_service_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.setdefault("req", {})["service"] = SERVICE_NAMES.get(sid, sid)
     flow["step"] = "name"
     await q.message.reply_text(
-        "Si e ke <b>emrin</b> (emër mbiemër)?", parse_mode="HTML")
+        t(ulang(q.from_user), "req_name"), parse_mode="HTML")
 
 
 async def req_text_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
     flow = context.user_data["flow"]
     step = flow.get("step")
+    lang = ulang(update.effective_user)
     text = (update.message.text or "").strip()
     if step == "name":
         context.user_data["req"]["name"] = text
         flow["step"] = "desc"
-        await update.message.reply_text(
-            "Përshkruaje shkurtimisht <b>çfarë të duhet</b>:",
-            parse_mode="HTML")
+        await update.message.reply_text(t(lang, "req_desc"), parse_mode="HTML")
     elif step == "desc":
         context.user_data["req"]["desc"] = text
         flow["step"] = "contact"
         kb = InlineKeyboardMarkup([[InlineKeyboardButton(
-            "⏭ Kapërce", callback_data="req:nocontact")]])
+            t(lang, "skip"), callback_data="req:nocontact")]])
         await update.message.reply_text(
-            "Një <b>kontakt</b> ku mund të të shkruaj Erioni "
-            "(numër telefoni ose email). Mund ta kapërcesh — biseda vazhdon këtu.",
-            parse_mode="HTML", reply_markup=kb)
+            t(lang, "req_contact"), parse_mode="HTML", reply_markup=kb)
     elif step == "contact":
         context.user_data["req"]["contact"] = text
         await req_finish(update, context)
@@ -628,11 +1101,12 @@ async def req_contact_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def req_finish(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
+    lang = ulang(user)
     d = context.user_data.get("req", {})
     block = store.request_block(user.id)  # kontroll i dytë, në krijim (Fiks 2)
     if block:
         await update.effective_message.reply_text(
-            REQ_PENDING_TEXT if block == "pending" else REQ_DAILY_TEXT,
+            t(lang, "req_pending" if block == "pending" else "req_daily"),
             parse_mode="HTML")
         context.user_data.pop("req", None)
         context.user_data.pop("flow", None)
@@ -653,11 +1127,7 @@ async def req_finish(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📞 Kontakti: {d.get('contact') or '—'}",
         markup=kb)
     await update.effective_message.reply_text(
-        "✅ <b>Kërkesa jote u dërgua.</b>\n\n"
-        "Erioni e shqyrton personalisht. Kur të miratohet, boti hapet "
-        "automatikisht për ty dhe merr njoftim këtu.\n\n"
-        "Përgjigjja zakonisht vjen brenda ditës.",
-        parse_mode="HTML")
+        t(lang, "req_sent"), parse_mode="HTML")
     context.user_data.pop("req", None)
     context.user_data.pop("flow", None)
 
@@ -699,14 +1169,16 @@ async def admin_decision_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                   parse_mode="HTML")
     except Exception:
         pass
+    clang = store.get_lang(req["user_id"])
     try:
         await context.bot.send_message(
             req["user_id"],
-            "🎉 <b>Kërkesa jote u MIRATUA!</b>\n\n"
-            f"Portali yt privat është aktiv deri më <b>{fmt_date(client['expires_at'])}</b>.\n\n"
-            + WELCOME_CLIENT.format(name=(req["name"] or "klient").split()[0],
-                                    status=store.get_status()),
-            parse_mode="HTML", reply_markup=CLIENT_KB)
+            t(clang, "approved_welcome", date=fmt_date(client['expires_at']))
+            + t(clang, "welcome",
+                name=(req["name"] or "klient").split()[0],
+                status=store.get_status()),
+            parse_mode="HTML", reply_markup=client_kb(clang))
+        await send_welcome_voice(context, req["user_id"])  # F5
     except Exception as e:
         log.warning("miratimi s'u dërgua: %s", e)
     # Fiks 4: backup automatik pas aktivizimit të klientit të ri
@@ -721,79 +1193,90 @@ async def admin_decision_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def guard_client(update: Update) -> bool:
     if has_access(update.effective_user):
         return True
-    await show_lock(update, None, "🔒 Së pari nevojitet kodi i aksesit.")
+    lang = ulang(update.effective_user)
+    await show_lock(update, None, t(lang, "lock_note_need_code"))
     return False
 
 
 async def show_services(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await guard_client(update):
         return
+    lang = ulang(update.effective_user)
     await update.effective_message.reply_text(
-        "💼 <b>Shërbimet</b> — zgjidh për detaje:",
-        parse_mode="HTML", reply_markup=service_kb("det"))
+        t(lang, "services_header"),
+        parse_mode="HTML", reply_markup=service_kb("det", lang))
 
 
 async def service_detail_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
+    lang = ulang(q.from_user)
     if not has_access(q.from_user):
-        await q.answer("Aksesi është i kyçur.", show_alert=True)
+        await q.answer(t(lang, "locked_alert"), show_alert=True)
         return
     await q.answer()
     sid = q.data.split(":", 1)[1]
     kb = InlineKeyboardMarkup([[InlineKeyboardButton(
-        "📝 Nis projekt të këtij lloji", callback_data="cli:brief")]])
-    await q.message.reply_text(SERVICE_DETAILS.get(sid, ""), parse_mode="HTML",
+        t(lang, "service_start_btn"), callback_data="cli:brief")]])
+    await q.message.reply_text(svc_details(sid, lang), parse_mode="HTML",
                                reply_markup=kb)
 
 
-def works_categories_kb():
+def works_categories_kb(lang: str = "sq"):
     rows = [[InlineKeyboardButton(label, callback_data=f"works:{cid}")]
-            for cid, label in WORK_CATEGORIES]
-    rows.append([InlineKeyboardButton("⭐ Vlerësime", callback_data="works:reviews")])
+            for cid, label in work_categories_for(lang)]
+    rows.append([InlineKeyboardButton(t(lang, "reviews_btn"),
+                                      callback_data="works:reviews")])
     return InlineKeyboardMarkup(rows)
 
 
-def works_category_kb(cid):
-    rows = [[InlineKeyboardButton(t, url=u)] for t, u in WORKS[cid]]
-    rows.append([InlineKeyboardButton("⬅ Kthehu", callback_data="works:cat")])
+def works_category_kb(cid, lang: str = "sq"):
+    rows = [[InlineKeyboardButton(lbl, url=u)]
+            for lbl, u in works_for(lang)[cid]]
+    rows.append([InlineKeyboardButton(t(lang, "back"),
+                                      callback_data="works:cat")])
     return InlineKeyboardMarkup(rows)
 
 
 async def show_works(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await guard_client(update):
         return
+    lang = ulang(update.effective_user)
     await update.effective_message.reply_text(
-        WORKS_HEADER, parse_mode="HTML", reply_markup=works_categories_kb())
+        t(lang, "works_header"), parse_mode="HTML",
+        reply_markup=works_categories_kb(lang))
 
 
 async def works_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Callback-et e shembujve të punës: kategori / vlerësime / mbrapa.
     Vetëm klientë të zhbllokuar — vizitori merr vetëm sinjalin e kyçjes."""
     q = update.callback_query
+    lang = ulang(q.from_user)
     if not has_access(q.from_user):
-        await q.answer("Aksesi është i kyçur.", show_alert=True)
+        await q.answer(t(lang, "locked_alert"), show_alert=True)
         return
     await q.answer()
     data = (q.data or "").split(":", 1)[1] if ":" in (q.data or "") else "cat"
     if data == "reviews":
         kb = InlineKeyboardMarkup([[InlineKeyboardButton(
-            "⬅ Kthehu", callback_data="works:cat")]])
-        await q.message.reply_text(REVIEWS_TEXT, parse_mode="HTML",
+            t(lang, "back"), callback_data="works:cat")]])
+        await q.message.reply_text(reviews_text(lang), parse_mode="HTML",
                                    reply_markup=kb)
     elif data in WORKS:
-        title = dict(WORK_CATEGORIES)[data]
+        title = dict(work_categories_for(lang))[data]
         await q.message.reply_text(
-            f"🗂 <b>{title}</b> — projekte live:",
-            parse_mode="HTML", reply_markup=works_category_kb(data))
+            t(lang, "works_cat_title", title=title),
+            parse_mode="HTML", reply_markup=works_category_kb(data, lang))
     else:  # "cat" → kthehu te kategoritë
         await q.message.reply_text(
-            WORKS_HEADER, parse_mode="HTML", reply_markup=works_categories_kb())
+            t(lang, "works_header"), parse_mode="HTML",
+            reply_markup=works_categories_kb(lang))
 
 
 async def show_faq(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await guard_client(update):
         return
-    await update.effective_message.reply_text(FAQ_TEXT, parse_mode="HTML")
+    lang = ulang(update.effective_user)
+    await update.effective_message.reply_text(t(lang, "faq"), parse_mode="HTML")
 
 
 async def show_cv(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -801,67 +1284,63 @@ async def show_cv(update: Update, context: ContextTypes.DEFAULT_TYPE):
     Vetëm klientë — vizitori s'merr as dokumentin, as përmbajtjen."""
     if not await guard_client(update):
         return
+    lang = ulang(update.effective_user)
     if not os.path.isfile(CV_PATH):
         await update.effective_message.reply_text(
-            "📄 CV-ja për momentin s'është e disponueshme këtu — kërkoja "
-            "Erionit me 💬 <b>Fol me Erionin</b>.", parse_mode="HTML")
+            t(lang, "cv_missing"), parse_mode="HTML")
         return
     try:
         with open(CV_PATH, "rb") as f:
             await context.bot.send_document(
                 update.effective_user.id, document=f,
-                filename="CV-Erion-Nezha.pdf", caption=CV_CAPTION)
+                filename="CV-Erion-Nezha.pdf", caption=t(lang, "cv_caption"))
     except Exception as e:
         log.warning("dërgimi i CV-së dështoi: %s", e)
         await update.effective_message.reply_text(
-            "📄 CV-ja s'u dërgua dot tani — kërkoja Erionit me 💬 "
-            "<b>Fol me Erionin</b>.", parse_mode="HTML")
+            t(lang, "cv_failed"), parse_mode="HTML")
 
 
 async def show_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await guard_client(update):
         return
+    lang = ulang(update.effective_user)
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🖼 Karta si imazh", callback_data="cli:cardimg")],
+        [InlineKeyboardButton(t(lang, "card_img_btn"), callback_data="cli:cardimg")],
         [InlineKeyboardButton("🎴 Kartvizita dixhitale", url="https://erionnezha.github.io/erionxx-business-card/")],
-        [InlineKeyboardButton("🌐 Portfolio", url="https://erionxx1.netlify.app")],
+        [InlineKeyboardButton("🌐 Portfolio", url="https://erionnezha.netlify.app")],
         [InlineKeyboardButton("💼 LinkedIn", url="https://www.linkedin.com/in/erion-nezha")],
         [InlineKeyboardButton("📸 Instagram", url="https://www.instagram.com/erjonixx/")],
     ])
     await update.effective_message.reply_text(
-        "🎴 <b>Erion Nezha</b> — Software Developer\nTiranë, Shqipëri\n\n"
-        "Ruaji kontaktet e mia:",
-        parse_mode="HTML", reply_markup=kb)
+        t(lang, "card_text"), parse_mode="HTML", reply_markup=kb)
 
 
 async def card_image_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """🖼 Karta si imazh: dërgon assets/card.png (me QR te boti) si foto.
     Vetëm klientë; nëse file-i mungon, mesazh i sjellshëm (si te CV-ja)."""
     q = update.callback_query
+    lang = ulang(q.from_user)
     if not has_access(q.from_user):
-        await q.answer("Aksesi është i kyçur.", show_alert=True)
+        await q.answer(t(lang, "locked_alert"), show_alert=True)
         return
     await q.answer()
     if not os.path.isfile(CARD_PATH):
-        await q.message.reply_text(
-            "🖼 Karta si imazh për momentin s'është e disponueshme — "
-            "përdor lidhjet e kartvizitës më sipër.")
+        await q.message.reply_text(t(lang, "card_img_missing"))
         return
     try:
         with open(CARD_PATH, "rb") as f:
             await context.bot.send_photo(
-                q.from_user.id, photo=f, caption=CARD_IMG_CAPTION)
+                q.from_user.id, photo=f, caption=t(lang, "card_img_caption"))
     except Exception as e:
         log.warning("dërgimi i kartës si imazh dështoi: %s", e)
-        await q.message.reply_text(
-            "🖼 Karta s'u dërgua dot tani — përdor lidhjet e kartvizitës "
-            "më sipër.")
+        await q.message.reply_text(t(lang, "card_img_failed"))
 
 
 async def show_access(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
+    lang = ulang(user)
     if is_admin(user):
-        await update.effective_message.reply_text("🔐 Je admini — akses i pakufizuar.")
+        await update.effective_message.reply_text(t(lang, "access_admin"))
         return
     rec = store.get_client(user.id)
     if not rec:
@@ -870,42 +1349,41 @@ async def show_access(update: Update, context: ContextTypes.DEFAULT_TYPE):
     exp = parse_iso(rec["expires_at"])
     days = max(0, (exp - datetime.now(timezone.utc)).days) if exp else "—"
     await update.effective_message.reply_text(
-        "🔐 <b>Aksesi yt</b>\n\n"
-        f"• Statusi: ✅ Aktiv\n"
-        f"• Skadon më: <b>{fmt_date(rec['expires_at'])}</b> (edhe {days} ditë)\n"
-        f"• Shërbimi: {rec.get('service') or '—'}\n\n"
-        "Për zgjatje, shkruaj Erionit me 💬 <b>Fol me Erionin</b>.",
+        t(lang, "access_text", date=fmt_date(rec["expires_at"]), days=days,
+          service=rec.get("service") or "—"),
         parse_mode="HTML")
 
 
 # ---------------------------------------------------------------- brief-i i projektit
 async def brief_start_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
+    lang = ulang(q.from_user)
     if not has_access(q.from_user):
-        await q.answer("Aksesi është i kyçur.", show_alert=True)
+        await q.answer(t(lang, "locked_alert"), show_alert=True)
         return
     await q.answer()
     if store.brief_block(q.from_user.id):  # anti-spam (Fiks 2)
-        await q.message.reply_text(BRIEF_DAILY_TEXT, parse_mode="HTML")
+        await q.message.reply_text(t(lang, "brief_daily"), parse_mode="HTML")
         return
     context.user_data["flow"] = {"kind": "brief", "step": "service"}
     context.user_data["brief"] = {}
     await q.message.reply_text(
-        "📝 <b>Projekt i ri</b>\n\nÇfarë lloj projekti është?",
-        parse_mode="HTML", reply_markup=service_kb("briefsvc"))
+        t(lang, "brief_title"), parse_mode="HTML",
+        reply_markup=service_kb("briefsvc", lang))
 
 
 async def brief_menu_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await guard_client(update):
         return
+    lang = ulang(update.effective_user)
     if store.brief_block(update.effective_user.id):  # anti-spam (Fiks 2)
-        await update.effective_message.reply_text(BRIEF_DAILY_TEXT, parse_mode="HTML")
+        await update.effective_message.reply_text(t(lang, "brief_daily"), parse_mode="HTML")
         return
     context.user_data["flow"] = {"kind": "brief", "step": "service"}
     context.user_data["brief"] = {}
     await update.effective_message.reply_text(
-        "📝 <b>Projekt i ri</b>\n\nÇfarë lloj projekti është?",
-        parse_mode="HTML", reply_markup=service_kb("briefsvc"))
+        t(lang, "brief_title"), parse_mode="HTML",
+        reply_markup=service_kb("briefsvc", lang))
 
 
 async def brief_service_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -915,29 +1393,30 @@ async def brief_service_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if flow.get("kind") != "brief":
         return
     sid = q.data.split(":", 1)[1]
-    context.user_data.setdefault("brief", {})["service"] = SERVICE_NAMES.get(sid, sid)
+    brief = context.user_data.setdefault("brief", {})
+    brief["service"] = SERVICE_NAMES.get(sid, sid)   # etiketa shqip (admini)
+    brief["service_key"] = sid
     flow["step"] = "desc"
     await q.message.reply_text(
-        "Përshkruaje projektin: çfarë duhet të bëjë, për kë është, "
-        "çfarë faqesh/funksionesh mendon?", parse_mode="HTML")
+        t(ulang(q.from_user), "brief_desc_q"), parse_mode="HTML")
 
 
 async def brief_text_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
     flow = context.user_data["flow"]
     step = flow.get("step")
+    lang = ulang(update.effective_user)
     text = (update.message.text or "").strip()
     if step == "desc":
         context.user_data["brief"]["desc"] = text
         flow["step"] = "budget"
         kb = InlineKeyboardMarkup([[InlineKeyboardButton(b, callback_data=f"briefbud:{i}")]
-                                    for i, b in enumerate(BUDGETS)])
+                                    for i, b in enumerate(budgets_for(lang))])
         await update.message.reply_text(
-            "Buxheti i përafërt?", reply_markup=kb)
+            t(lang, "brief_budget_q"), reply_markup=kb)
     elif step == "deadline":
         context.user_data["brief"]["deadline"] = text
         flow["step"] = "contact"
-        await update.message.reply_text(
-            "Kontakti yt (telefon ose email):")
+        await update.message.reply_text(t(lang, "brief_contact_q"))
     elif step == "contact":
         context.user_data["brief"]["contact"] = text
         await brief_finish(update, context)
@@ -950,17 +1429,153 @@ async def brief_budget_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if flow.get("kind") != "brief":
         return
     idx = int(q.data.split(":", 1)[1])
-    context.user_data.setdefault("brief", {})["budget"] = BUDGETS[idx]
+    lang = ulang(q.from_user)
+    budgets = budgets_for(lang)
+    if not (0 <= idx < len(budgets)):
+        idx = 0
+    context.user_data.setdefault("brief", {})["budget"] = budgets[idx]
     flow["step"] = "deadline"
-    await q.message.reply_text(
-        "Kur të duhet gati? (p.sh. brenda muajit / kam një datë)")
+    await q.message.reply_text(t(lang, "brief_deadline_q"))
+
+
+# ---------------------------------------------------------------- F4: PDF-ja e propozimit
+def _pdf_bytes(s: str) -> bytes:
+    """Tekst → bytes WinAnsi (cp1252): ë/ç/Ë/Ç dalin saktë me fontet
+    bazë-14; shenjat jashtë hartës (p.sh. emoji) hiqen pa gabim."""
+    return (s or "").encode("cp1252", "ignore")
+
+
+def _pdf_escape_b(b: bytes) -> bytes:
+    return b.replace(b"\\", b"\\\\").replace(b"(", b"\\(").replace(b")", b"\\)")
+
+
+def _pdf_wrap(text: str, width: int):
+    """Mbështjellje e thjeshtë e fjalëve sipas gjatësisë së rreshtit."""
+    words, lines, cur = (text or "").split(), [], ""
+    for w in words:
+        if len(cur) + (1 if cur else 0) + len(w) > width:
+            if cur:
+                lines.append(cur)
+            cur = w
+            while len(cur) > width:  # fjalë shumë e gjatë → pritet
+                lines.append(cur[:width])
+                cur = cur[width:]
+        else:
+            cur = (cur + " " + w) if cur else w
+    if cur:
+        lines.append(cur)
+    return lines or [""]
+
+
+def build_proposal_pdf(brief: dict, client_name: str, lang: str = "sq") -> bytes:
+    """PROPOZIM PARAPRAK — një faqe A4, e ndërtuar me kod të pastër
+    stdlib (pa asnjë varësi): sfond i zi, vija ari, font Helvetica
+    (bazë-14, WinAnsi). KURRË çmime/shuma — vetëm të dhënat e vetë
+    klientit + tekstet statike të shabllonit (pa shifra)."""
+    en = (lang == "en")
+    L = {
+        "title": "PRELIMINARY PROPOSAL" if en else "PROPOZIM PARAPRAK",
+        "client": "Client" if en else "Klienti",
+        "service": "Service" if en else "Shërbimi",
+        "desc": "Description" if en else "Përshkrimi",
+        "budget": "Budget" if en else "Buxheti",
+        "deadline": "Desired timeline" if en else "Afati i dëshiruar",
+        "contact": "Contact" if en else "Kontakti",
+        "next_h": "Next steps" if en else "Hapat e radhës",
+        "next": ("Discussion and clarifications - Final offer - "
+                 "Agreement - Work begins" if en else
+                 "Diskutim dhe sqarime - Oferta përfundimtare - "
+                 "Marrëveshja - Nisja e punës"),
+        "note": ("This is a preliminary, non-binding summary. The "
+                 "final offer follows our discussion." if en else
+                 "Ky është një përmbledhje paraprake, pa angazhim. "
+                 "Oferta përfundimtare vjen pas diskutimit tonë."),
+    }
+    sid = brief.get("service_key") or ""
+    service_label = (svc_name(sid, lang) if sid
+                     else (brief.get("service") or "—"))
+    desc = (brief.get("desc") or "—").strip()
+    if len(desc) > 700:
+        desc = desc[:700].rstrip() + "…"
+    rows = [
+        (L["client"], client_name or "—"),
+        (L["service"], service_label),
+        (L["desc"], desc),
+        (L["budget"], brief.get("budget") or "—"),
+        (L["deadline"], brief.get("deadline") or "—"),
+        (L["contact"], brief.get("contact") or "—"),
+    ]
+    ops = []  # operatori i rrjedhës së përmbajtjes (bytes)
+    ops.append(b"0 0 0 rg 0 0 595 842 re f")              # sfondi i zi
+    ops.append(b"0.85 0.65 0.13 RG 3 w 40 786 m 555 786 l S")  # vija ari lart
+    y = [806.0]
+
+    def line(text, size=11, font=b"F1", color=b"1 1 1", dy=16, x=40):
+        text = " ".join((text or "").split())
+        ops.append(b"BT /" + font + b" " + str(size).encode() + b" Tf "
+                   + color + b" rg 1 0 0 1 " + str(x).encode() + b" "
+                   + f"{y[0]:.0f}".encode() + b" Tm (" +
+                   _pdf_escape_b(_pdf_bytes(text)) + b") Tj ET")
+        y[0] -= dy
+
+    gold, white = b"0.85 0.65 0.13", b"1 1 1"
+    line("ERION NEZHA - PRIVATE CLIENTS", 17, b"F2", gold, dy=30)
+    line(L["title"], 13, b"F2", white, dy=26)
+    ops.append(b"0.85 0.65 0.13 RG 1.5 w 40 " + f"{y[0] + 8:.0f}".encode()
+               + b" m 555 " + f"{y[0] + 8:.0f}".encode() + b" l S")
+    y[0] -= 14
+    for label, value in rows:
+        line(label.upper(), 9.5, b"F2", gold, dy=13)
+        for ln in _pdf_wrap(value, 88)[:9]:
+            line(ln, 11, b"F1", white, dy=15)
+        y[0] -= 7
+    line(L["next_h"].upper(), 9.5, b"F2", gold, dy=13)
+    for ln in _pdf_wrap(L["next"], 88):
+        line(ln, 11, b"F1", white, dy=15)
+    # footer-i (pozicion fiks, poshtë)
+    y[0] = 74.0
+    ops.append(b"0.85 0.65 0.13 RG 1.5 w 40 88 m 555 88 l S")
+    line("MR ERJONIXX", 11, b"F2", gold, dy=15)
+    for ln in _pdf_wrap(L["note"], 100):
+        line(ln, 8.5, b"F1", white, dy=11)
+    stream = b"\n".join(ops)
+
+    def obj(n, body):
+        return str(n).encode() + b" 0 obj\n" + body + b"\nendobj\n"
+
+    objects = [
+        obj(1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        obj(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        obj(3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] "
+               b"/Resources << /Font << /F1 4 0 R /F2 5 0 R >> >> "
+               b"/Contents 6 0 R >>"),
+        obj(4, b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica "
+               b"/Encoding /WinAnsiEncoding >>"),
+        obj(5, b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold "
+               b"/Encoding /WinAnsiEncoding >>"),
+        obj(6, b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n"
+               + stream + b"\nendstream"),
+    ]
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for o in objects:
+        offsets.append(len(out))
+        out += o
+    xref_at = len(out)
+    out += b"xref\n0 7\n0000000000 65535 f \n"
+    for off in offsets:
+        out += f"{off:010d} 00000 n \n".encode()
+    out += (b"trailer\n<< /Size 7 /Root 1 0 R >>\nstartxref\n"
+            + str(xref_at).encode() + b"\n%%EOF")
+    return bytes(out)
 
 
 async def brief_finish(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
+    lang = ulang(user)
     d = context.user_data.get("brief", {})
     if store.brief_block(user.id):  # kontroll përfundimtar (Fiks 2)
-        await update.message.reply_text(BRIEF_DAILY_TEXT, parse_mode="HTML")
+        await update.message.reply_text(t(lang, "brief_daily"), parse_mode="HTML")
         context.user_data.pop("brief", None)
         context.user_data.pop("flow", None)
         return
@@ -975,24 +1590,42 @@ async def brief_finish(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📞 Kontakti: {d.get('contact', '—')}\n\n"
         f"💡 <b>Gjurmim:</b> për ta ndjekur projektin te klienti, kopjo: "
         f"<code>/projekt {user.id} Titulli i projektit</code>")
+    # F4: propozimi paraprak PDF për adminin + klientin (në heshtje
+    # nëse gjenerimi dështon — rrjedha e brief-it s'prishet kurrë)
+    try:
+        pdf = build_proposal_pdf(d, user.first_name or "", lang)
+        for chat_id, cap in (
+                (ADMIN_ID, "🧾 Propozimi paraprak për brief-in e "
+                           f"{user.first_name or 'klientit'} — "
+                           "përmbledhje pa angazhim."),
+                (user.id, t(lang, "pdf_caption"))):
+            try:
+                await context.bot.send_document(
+                    chat_id, document=io.BytesIO(pdf),
+                    filename="propozim-paraprak.pdf", caption=cap)
+            except Exception as e:
+                log.warning("PDF-ja s'u dërgua te %s: %s", chat_id, e)
+    except Exception as e:
+        log.warning("gjenerimi i PDF-së dështoi: %s", e)
     store.bump_today(user.id, "briefs")
     await update.message.reply_text(
-        "✅ <b>Brief-i u dërgua!</b>\n\nErioni e lexon dhe të përgjigjet këtu "
-        "me hapat e radhës dhe preventivin. Faleminderit për besimin!",
-        parse_mode="HTML", reply_markup=CLIENT_KB)
+        t(lang, "brief_sent"), parse_mode="HTML",
+        reply_markup=client_kb(lang))
     context.user_data.pop("brief", None)
     context.user_data.pop("flow", None)
 
 
 # ---------------------------------------------------------------- F1: Projekti im
-def project_view_text(rec) -> str:
+def project_view_text(rec, lang: str = "sq") -> str:
     """Pamja e projektit për klientin: fazat me simbole + shiriti i
     progresit VETËM me simbole (✅/🔄/⚪ dhe ▰/▱) — kurrë përqindje
-    apo numra fazash (urdhri 'mos vendos shifra')."""
+    apo numra fazash (urdhri 'mos vendos shifra'). Etiketat e fazave
+    përkthehen sipas gjuhës; titulli/shënimi janë përmbajtje admini."""
     stage = int(rec.get("stage") or 0)
     done = bool(rec.get("done"))
+    stages = stages_for(lang)
     lines = [f"🚧 <b>{rec.get('title') or 'Projekt'}</b>"]
-    for i, label in enumerate(PROJECT_STAGES):
+    for i, label in enumerate(stages):
         if done or i < stage:
             mark = "✅"
         elif i == stage:
@@ -1000,11 +1633,12 @@ def project_view_text(rec) -> str:
         else:
             mark = "⚪"
         lines.append(f"{mark} {label}")
-    filled = len(PROJECT_STAGES) if done else stage + 1
-    lines.append("▰" * filled + "▱" * (len(PROJECT_STAGES) - filled))
+    filled = len(stages) if done else stage + 1
+    lines.append("▰" * filled + "▱" * (len(stages) - filled))
     if rec.get("note"):
         lines.append(f"📝 <i>{rec['note']}</i>")
-    lines.append(f"🕒 Përditësuar më: {fmt_date(rec.get('updated_at'))}")
+    lines.append(t(lang, "project_updated",
+                   date=fmt_date(rec.get('updated_at'))))
     return "\n".join(lines)
 
 
@@ -1013,15 +1647,17 @@ async def show_projects(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await guard_client(update):
         return
     user = update.effective_user
+    lang = ulang(user)
     projects = store.list_projects(user.id) if not is_admin(user) else []
     active = [p for p in projects if not p.get("done")]
     finished = [p for p in projects if p.get("done")]
     ordered = active + finished
     if not ordered:
         await update.effective_message.reply_text(
-            PROJECTS_EMPTY, parse_mode="HTML")
+            t(lang, "projects_empty"), parse_mode="HTML")
         return
-    parts = [PROJECTS_HEADER] + [project_view_text(p) for p in ordered]
+    parts = [t(lang, "projects_header")] + [project_view_text(p, lang)
+                                           for p in ordered]
     await update.effective_message.reply_text(
         "\n\n".join(parts), parse_mode="HTML")
 
@@ -1082,13 +1718,17 @@ async def adm_project_stage(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"✅ Faza u ndryshua në <b>{PROJECT_STAGES[match]}</b> për "
         f"projektin e klientit {uid} — klienti u njoftua.",
         parse_mode="HTML")
+    clang = store.get_lang(uid)
     try:
         await context.bot.send_message(
             uid,
-            "🚧 <b>Përditësim projekti</b>\n\n" + project_view_text(rec),
+            t(clang, "project_update_title") + "\n\n"
+            + project_view_text(rec, clang),
             parse_mode="HTML")
     except Exception as e:
         log.warning("njoftimi i fazës s'u dërgua: %s", e)
+    if match == len(PROJECT_STAGES) - 1:  # faza e fundit → F1
+        await ask_review(context, uid, rec)
 
 
 async def adm_project_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1129,12 +1769,177 @@ async def adm_project_finish(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await update.message.reply_text(
         "🎉 Projekti i klientit "
         f"{uid} u shënua i përfunduar — klienti u njoftua.")
+    clang = store.get_lang(uid)
     try:
         await context.bot.send_message(
-            uid, CLIENT_FINISH_TEXT.format(title=rec.get("title") or "Projekt"),
+            uid, t(clang, "project_finish",
+                   title=rec.get("title") or "Projekt"),
             parse_mode="HTML")
     except Exception as e:
         log.warning("njoftimi i përfundimit s'u dërgua: %s", e)
+    await ask_review(context, uid, rec)  # F1: kërkesa për vlerësim
+
+
+# ---------------------------------------------------------------- F1: vlerësimet automatike
+def _review_admin_kb(rid: str):
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Publiko", callback_data=f"revadm:ok:{rid}"),
+        InlineKeyboardButton("❌ Mos e publiko", callback_data=f"revadm:no:{rid}"),
+    ]])
+
+
+def _review_admin_text(rec, project_title: str = "") -> str:
+    stars = "⭐" * int(rec.get("stars") or 0)
+    lines = ["⭐ <b>VLERËSIM I RI</b>",
+             f"👤 {rec.get('name') or '—'} (id {rec.get('client_id')})"]
+    if project_title:
+        lines.append(f"🚧 Projekti: {project_title}")
+    lines.append(stars)
+    if rec.get("text"):
+        lines.append(f"💬 {rec['text']}")
+    return "\n".join(lines)
+
+
+async def ask_review(context: ContextTypes.DEFAULT_TYPE, uid: int, project: dict):
+    """F1: pas përfundimit të projektit, klienti ftohet të vlerësojë
+    (yje me simbole + kapërce). Një vlerësim për projekt — nëse
+    ekziston tashmë (çdo status), s'pyetet më."""
+    if store.review_for_project(project["id"]) is not None:
+        return
+    lang = store.get_lang(uid)
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⭐" * n,
+                              callback_data=f"rev:s:{project['id']}:{n}")
+         for n in (1, 2, 3)],
+        [InlineKeyboardButton("⭐" * n,
+                              callback_data=f"rev:s:{project['id']}:{n}")
+         for n in (4, 5)],
+        [InlineKeyboardButton(t(lang, "review_skip"),
+                              callback_data=f"rev:skip:{project['id']}")],
+    ])
+    try:
+        await context.bot.send_message(
+            uid, t(lang, "review_ask", title=project.get("title") or "Projekt"),
+            parse_mode="HTML", reply_markup=kb)
+    except Exception as e:
+        log.warning("ftesa për vlerësim s'u dërgua: %s", e)
+
+
+async def review_stars_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Hapi i yjeve: ruan zgjedhjen dhe kërkon komentin opsional."""
+    q = update.callback_query
+    lang = ulang(q.from_user)
+    if not has_access(q.from_user):
+        await q.answer(t(lang, "locked_alert"), show_alert=True)
+        return
+    await q.answer()
+    parts = (q.data or "").split(":")  # rev:s:<pid>:<n>
+    if len(parts) != 4:
+        return
+    pid, n = parts[2], int(parts[3])
+    proj = store.get_project(pid)
+    if not proj or int(proj.get("client_id") or 0) != q.from_user.id:
+        return
+    if store.review_for_project(pid) is not None:
+        return  # një vlerësim për projekt
+    context.user_data["flow"] = {"kind": "review", "project_id": pid,
+                                 "stars": n}
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+        t(lang, "skip"), callback_data="rev:tskip")]])
+    await q.message.reply_text(t(lang, "review_comment_q"),
+                               parse_mode="HTML", reply_markup=kb)
+
+
+async def review_skip_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Kapërcimi te hapi i yjeve: asnjë vlerësim s'krijohet."""
+    q = update.callback_query
+    await q.answer()
+    lang = ulang(q.from_user)
+    if not has_access(q.from_user):
+        return
+    await q.message.reply_text(t(lang, "review_skipped"))
+
+
+async def review_tskip_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Kapërcimi i komentit: vlerësimi ruhet vetëm me yjet."""
+    q = update.callback_query
+    await q.answer()
+    flow = context.user_data.get("flow") or {}
+    if flow.get("kind") != "review":
+        return
+    context.user_data.pop("flow", None)
+    await _finalize_review(update, context, flow, "")
+
+
+async def review_text_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Komenti i vlerësimit (hapi i dytë i rrjedhës 'review')."""
+    flow = context.user_data["flow"]
+    text = (update.message.text or "").strip()
+    context.user_data.pop("flow", None)
+    await _finalize_review(update, context, flow, text)
+
+
+async def _finalize_review(update, context, flow: dict, text: str):
+    user = update.effective_user
+    lang = ulang(user)
+    pid = flow.get("project_id")
+    proj = store.get_project(pid) if pid else None
+    if not proj:
+        return
+    client_name = user.first_name or ""
+    rec_client = store.get_client(user.id)
+    if rec_client and rec_client.get("name"):
+        client_name = rec_client["name"]
+    rec, created = store.create_review(
+        user.id, client_name, pid, int(flow.get("stars") or 5), text)
+    if created:
+        await notify_admin(
+            context, _review_admin_text(rec, proj.get("title") or ""),
+            markup=_review_admin_kb(rec["id"]))
+    await update.effective_message.reply_text(
+        t(lang, "review_thanks"), parse_mode="HTML")
+
+
+async def review_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Vendimi i adminit mbi vlerësimin (publiko/refuzo) — vetëm
+    admini; për të tjerët heshtje totale."""
+    q = update.callback_query
+    if not is_admin(q.from_user):
+        return
+    await q.answer()
+    parts = (q.data or "").split(":")  # revadm:ok|no:<rid>
+    if len(parts) != 3:
+        return
+    action, rid = parts[1], parts[2]
+    rec = store.get_review(rid)
+    if not rec:
+        return
+    store.set_review_status(rid, "approved" if action == "ok" else "rejected")
+    verdict = ("✅ <b>U PUBLIKUA</b> — shfaqet te ⭐ Vlerësimet."
+               if action == "ok" else "❌ <b>U REFUZUA</b> — s'shfaqet.")
+    try:
+        await q.edit_message_text((q.message.text or "") + "\n\n" + verdict,
+                                  parse_mode="HTML")
+    except Exception:
+        await q.message.reply_text(verdict, parse_mode="HTML")
+
+
+async def adm_reviews(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """F1: /vleresime — vlerësimet në pritje, me butonat e vendimit."""
+    if not is_admin(update.effective_user):
+        return
+    pending = store.list_reviews(status="pending")
+    if not pending:
+        await update.message.reply_text(
+            "⭐ S'ka vlerësime në pritje për momentin.")
+        return
+    await update.message.reply_text(
+        f"⭐ <b>{len(pending)} vlerësim(e) në pritje:</b>", parse_mode="HTML")
+    for rec in pending[:10]:
+        proj = store.get_project(rec.get("project_id") or "")
+        await update.message.reply_text(
+            _review_admin_text(rec, (proj or {}).get("title") or ""),
+            parse_mode="HTML", reply_markup=_review_admin_kb(rec["id"]))
 
 
 # ---------------------------------------------------------------- F2: Rezervo konsultë
@@ -1143,26 +1948,29 @@ async def booking_menu_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not await guard_client(update):
         return
     user = update.effective_user
+    lang = ulang(user)
     if store.pending_booking_for(user.id):
         await update.effective_message.reply_text(
-            BOOK_PENDING_TEXT, parse_mode="HTML")
+            t(lang, "book_pending"), parse_mode="HTML")
         return
     context.user_data["flow"] = {"kind": "booking", "step": "service"}
     context.user_data["booking"] = {}
     await update.effective_message.reply_text(
-        BOOK_START_TEXT, parse_mode="HTML", reply_markup=service_kb("booksvc"))
+        t(lang, "book_start"), parse_mode="HTML",
+        reply_markup=service_kb("booksvc", lang))
 
 
-def _slot_rows(slots):
-    return [[InlineKeyboardButton(fmt_slot(parse_iso(s["dt_iso"])),
+def _slot_rows(slots, lang: str = "sq"):
+    return [[InlineKeyboardButton(fmt_slot(parse_iso(s["dt_iso"]), lang),
                                   callback_data=f"bookslot:{s['id']}")]
             for s in slots]
 
 
 async def book_service_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
+    lang = ulang(q.from_user)
     if not has_access(q.from_user):
-        await q.answer("Aksesi është i kyçur.", show_alert=True)
+        await q.answer(t(lang, "locked_alert"), show_alert=True)
         return
     await q.answer()
     flow = context.user_data.get("flow") or {}
@@ -1174,18 +1982,19 @@ async def book_service_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not slots:
         context.user_data.pop("flow", None)
         context.user_data.pop("booking", None)
-        await q.message.reply_text(BOOK_NO_SLOTS_TEXT, parse_mode="HTML")
+        await q.message.reply_text(t(lang, "book_no_slots"), parse_mode="HTML")
         return
     flow["step"] = "slot"
     await q.message.reply_text(
-        BOOK_PICK_SLOT_TEXT, parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(_slot_rows(slots)))
+        t(lang, "book_pick_slot"), parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(_slot_rows(slots, lang)))
 
 
 async def book_slot_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
+    lang = ulang(q.from_user)
     if not has_access(q.from_user):
-        await q.answer("Aksesi është i kyçur.", show_alert=True)
+        await q.answer(t(lang, "locked_alert"), show_alert=True)
         return
     await q.answer()
     flow = context.user_data.get("flow") or {}
@@ -1197,7 +2006,7 @@ async def book_slot_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if store.pending_booking_for(user.id):
         context.user_data.pop("flow", None)
         context.user_data.pop("booking", None)
-        await q.message.reply_text(BOOK_PENDING_TEXT, parse_mode="HTML")
+        await q.message.reply_text(t(lang, "book_pending"), parse_mode="HTML")
         return
     slot = store.get_slot(slot_id)
     if slot is None or slot.get("booked_by") is not None:
@@ -1208,10 +2017,10 @@ async def book_slot_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["flow"] = {"kind": "booking", "step": "slot"}
             context.user_data["booking"] = {"service_key": booking["service_key"]}
             await q.message.reply_text(
-                BOOK_TAKEN_TEXT, parse_mode="HTML",
-                reply_markup=InlineKeyboardMarkup(_slot_rows(slots)))
+                t(lang, "book_taken"), parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(_slot_rows(slots, lang)))
         else:
-            await q.message.reply_text(BOOK_NO_SLOTS_TEXT, parse_mode="HTML")
+            await q.message.reply_text(t(lang, "book_no_slots"), parse_mode="HTML")
         return
     rec = store.create_booking(user.id, slot_id, booking["service_key"])
     kb = InlineKeyboardMarkup([[
@@ -1225,9 +2034,69 @@ async def book_slot_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"💼 Shërbimi: {SERVICE_NAMES.get(booking['service_key'], booking['service_key'])}\n"
         f"🗓 Orari: <b>{fmt_slot(parse_iso(slot['dt_iso']))}</b>",
         markup=kb)
-    await q.message.reply_text(BOOK_SENT_TEXT, parse_mode="HTML")
+    await q.message.reply_text(t(lang, "book_sent"), parse_mode="HTML")
     context.user_data.pop("flow", None)
     context.user_data.pop("booking", None)
+
+
+# ---------------------------------------------------------------- F2: kalendari (ICS + Google)
+BOOKING_DURATION_MIN = 45
+
+
+def _ics_escape(s: str) -> str:
+    return (s or "").replace("\\", "\\\\").replace(";", "\\;") \
+                    .replace(",", "\\,").replace("\n", "\\n")
+
+
+def _ics_utc(dt: datetime) -> str:
+    return dt.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def build_booking_ics(booking: dict, slot_dt: datetime, service_label: str,
+                      client_name: str) -> bytes:
+    """File .ics (stdlib, RFC 5545 bazë): DTSTART/DTEND në UTC nga
+    orari i Tiranës, kohëzgjatje standarde, UID nga id-ja e
+    rezervimit. Përmbajtja është TË DHËNA funksionale — shifrat
+    brenda file-it lejohen (nuk janë tekst ndërfaqeje)."""
+    end = slot_dt + timedelta(minutes=BOOKING_DURATION_MIN)
+    summary = f"Konsultë me Erion Nezha — {service_label}"
+    if client_name:
+        summary += f" ({client_name})"
+    lines = [
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        "PRODID:-//ErionNezhaBot//EN//",
+        "BEGIN:VEVENT",
+        f"UID:{booking['id']}@enclient",
+        f"DTSTAMP:{_ics_utc(datetime.now(timezone.utc))}",
+        f"DTSTART:{_ics_utc(slot_dt)}",
+        f"DTEND:{_ics_utc(end)}",
+        f"SUMMARY:{_ics_escape(summary)}",
+        "DESCRIPTION:" + _ics_escape(
+            "Konsultë private me Erion Nezha — biseda zhvillohet "
+            "në chat-in e botit @ErionNezhaBot."),
+        "END:VEVENT",
+        "END:VCALENDAR",
+    ]
+    return ("\r\n".join(lines) + "\r\n").encode("utf-8")
+
+
+def gcal_url(slot_dt: datetime, service_label: str, client_name: str) -> str:
+    """Lidhje 'template' e Google Calendar (e paraplotësuar) — pa
+    asnjë kredencial; përdoruesi e hap dhe e ruan vetë ngjarjen."""
+    end = slot_dt + timedelta(minutes=BOOKING_DURATION_MIN)
+    summary = f"Konsultë me Erion Nezha — {service_label}"
+    if client_name:
+        summary += f" ({client_name})"
+    params = {
+        "action": "TEMPLATE",
+        "text": summary,
+        "dates": f"{_ics_utc(slot_dt)}/{_ics_utc(end)}",
+        "details": "Konsultë private me Erion Nezha — biseda "
+                   "zhvillohet në chat-in e botit @ErionNezhaBot.",
+    }
+    return ("https://calendar.google.com/calendar/render?"
+            + urllib.parse.urlencode(params))
 
 
 async def booking_decision_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1250,8 +2119,10 @@ async def booking_decision_cb(update: Update, context: ContextTypes.DEFAULT_TYPE
             show_alert=True)
         return
     await q.answer()
-    slot_label = fmt_slot(parse_iso(slot["dt_iso"])) if slot else "—"
-    svc = SERVICE_NAMES.get(b["service_key"], b["service_key"])
+    slot_dt = parse_iso(slot["dt_iso"]) if slot else None
+    clang = store.get_lang(b["client_id"])
+    client_rec_b = store.get_client_any(b["client_id"]) or {}
+    client_name = client_rec_b.get("name") or ""
     if action == "no":
         store.set_booking_status(bid, "rejected")
         try:
@@ -1262,7 +2133,9 @@ async def booking_decision_cb(update: Update, context: ContextTypes.DEFAULT_TYPE
         try:
             await context.bot.send_message(
                 b["client_id"],
-                BOOK_REJECTED_TEXT.format(service=svc, slot=slot_label),
+                t(clang, "book_rejected",
+                  service=svc_name(b["service_key"], clang),
+                  slot=fmt_slot(slot_dt, clang) if slot_dt else "—"),
                 parse_mode="HTML")
         except Exception as e:
             log.warning("refuzimi i konsultës s'u dërgua: %s", e)
@@ -1273,13 +2146,47 @@ async def booking_decision_cb(update: Update, context: ContextTypes.DEFAULT_TYPE
             q.message.text + "\n\n✅ <b>KONFIRMUAR</b>", parse_mode="HTML")
     except Exception:
         pass
+    # F2: butoni Google Calendar në të dy mesazhet e miratimit
+    gcal_kb = None
+    if slot_dt is not None:
+        gcal_kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+            t(clang, "gcal_btn"),
+            url=gcal_url(slot_dt, svc_name(b["service_key"], "sq"),
+                         client_name))]])
+    try:
+        await q.message.reply_text(
+            "📅 Konsulta u konfirmua — klienti mori edhe file-in e "
+            "kalendarit (.ics) dhe butonin Google Calendar.",
+            reply_markup=gcal_kb)
+    except Exception:
+        pass
     try:
         await context.bot.send_message(
             b["client_id"],
-            BOOK_APPROVED_TEXT.format(service=svc, slot=slot_label),
-            parse_mode="HTML")
+            t(clang, "book_approved",
+              service=svc_name(b["service_key"], clang),
+              slot=fmt_slot(slot_dt, clang) if slot_dt else "—"),
+            parse_mode="HTML", reply_markup=gcal_kb)
     except Exception as e:
         log.warning("konfirmimi i konsultës s'u dërgua: %s", e)
+    # F2: file-i .ics si dokument për klientin DHE adminin
+    if slot_dt is not None:
+        try:
+            ics = build_booking_ics(b, slot_dt,
+                                    svc_name(b["service_key"], "sq"),
+                                    client_name)
+            for chat_id, cap in (
+                    (b["client_id"], t(clang, "ics_caption")),
+                    (ADMIN_ID, "📅 File-i i kalendarit për konsultën e "
+                               f"{client_name or 'klientit'}.")):
+                try:
+                    await context.bot.send_document(
+                        chat_id, document=io.BytesIO(ics),
+                        filename="konsulte.ics", caption=cap)
+                except Exception as e:
+                    log.warning("ICS s'u dërgua te %s: %s", chat_id, e)
+        except Exception as e:
+            log.warning("gjenerimi i ICS dështoi: %s", e)
 
 
 def _parse_slot_dt(date_s: str, time_s: str):
@@ -1366,12 +2273,14 @@ def plan_reminders(at: datetime = None):
         if dt is None or not (timedelta(0) <= dt - at <= BOOKING_REMIND_WITHIN):
             continue
         svc = SERVICE_NAMES.get(b["service_key"], b["service_key"])
-        slot_label = fmt_slot(dt)
+        clang = store.get_lang(b["client_id"])
         client = store.get_client_any(b["client_id"]) or {}
         actions.append({
             "kind": "booking_client", "chat_id": b["client_id"],
-            "text": REMINDER_BOOKING_CLIENT.format(
-                service=svc, slot=slot_label)})
+            "text": t(clang, "reminder_booking_client",
+                      service=svc_name(b["service_key"], clang),
+                      slot=fmt_slot(dt, clang))})
+        slot_label = fmt_slot(dt)
         actions.append({
             "kind": "booking_admin", "chat_id": ADMIN_ID,
             "text": REMINDER_BOOKING_ADMIN.format(
@@ -1391,7 +2300,8 @@ def plan_reminders(at: datetime = None):
         uid = int(uid_s)
         actions.append({
             "kind": "expiry_client", "chat_id": uid,
-            "text": EXPIRY_CLIENT_TEXT.format(date=fmt_date(rec["expires_at"]))})
+            "text": t(store.get_lang(uid), "expiry_client",
+                      date=fmt_date(rec["expires_at"]))})
         store.mark_expiry_reminded(uid)
         reminded_names.append(
             f"{rec.get('name') or ''} (@{rec.get('username') or '—'}, id {uid})")
@@ -1405,12 +2315,93 @@ def plan_reminders(at: datetime = None):
     return actions
 
 
+# ---------------------------------------------------------------- F6: raporti javor
+def build_digest_text(week: str, counters: dict, at: datetime = None) -> str:
+    """Teksti i raportit javor (vetëm admin — shifrat lejohen këtu):
+    numëruesit e javës + klientët aktivë tani + ata që skadojnë
+    brenda pak ditësh (me emra) + pikat në pritje të veprimit."""
+    at = at or datetime.now(timezone.utc)
+    c = counters or {}
+    active, expiring = 0, []
+    for uid_s, rec in store.list_clients().items():
+        if rec.get("revoked"):
+            continue
+        exp = parse_iso(rec.get("expires_at"))
+        if exp is None or exp <= at:
+            continue
+        active += 1
+        if exp - at <= EXPIRY_REMIND_WITHIN:
+            expiring.append(rec.get("name") or uid_s)
+    pend_req = len(store.list_requests(status="pending"))
+    pend_book = len([b for b in store.list_bookings().values()
+                     if b.get("status") == "pending"])
+    lines = [
+        f"📊 <b>RAPORTI JAVOR — {week}</b>",
+        "",
+        f"👥 Klientë të rinj: <b>{c.get('clients', 0)}</b>",
+        f"📝 Kërkesa shërbimi: <b>{c.get('requests', 0)}</b> "
+        f"(miratuar: {c.get('requests_approved', 0)})",
+        f"🚀 Brief-e projektesh: <b>{c.get('briefs', 0)}</b>",
+        f"🗓 Konsulta të kërkuara: <b>{c.get('bookings', 0)}</b> "
+        f"(miratuar: {c.get('bookings_approved', 0)})",
+        f"⭐ Vlerësime të marra: <b>{c.get('reviews', 0)}</b>",
+        "",
+        f"👥 Klientë aktivë tani: <b>{active}</b>",
+    ]
+    if expiring:
+        lines.append("⏰ Skadojnë brenda pak ditësh: "
+                     + ", ".join(expiring))
+    lines += [
+        "",
+        f"🔔 Në pritje të veprimit tënd: <b>{pend_req}</b> kërkesë(a), "
+        f"<b>{pend_book}</b> konsultë(a).",
+    ]
+    return "\n".join(lines)
+
+
+def plan_digest(at: datetime = None):
+    """F6: planifikues i pastër — të hënën (ora e Tiranës) pas orës
+    nëntë, një herë në javë, kthen veprimin e raportit për javën e
+    kaluar (ose javën rrjedhëse në ekzekutimin e parë). Flamuri
+    vendoset para kthimit — raporti s'dërgohet dy herë."""
+    at = at or datetime.now(timezone.utc)
+    local = at.astimezone(TIRANA)
+    if local.weekday() != 0 or local.hour < 9:
+        return []
+    cur = Store.week_key(at)
+    if store.get_last_digest_week() == cur:
+        return []
+    prev_local = local - timedelta(days=7)
+    prev = Store.week_key(prev_local)
+    counters = store.weekly_counters(prev)
+    week_label = prev
+    if not counters:
+        counters = store.weekly_counters(cur)
+        week_label = cur
+    store.set_last_digest_week(cur)
+    return [{"kind": "digest", "chat_id": ADMIN_ID,
+             "text": build_digest_text(week_label, counters, at)}]
+
+
+async def adm_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """F6: /raport — raporti i javës rrjedhëse, sipas kërkesës."""
+    if not is_admin(update.effective_user):
+        return
+    now = datetime.now(timezone.utc)
+    key = Store.week_key(now)
+    await update.message.reply_text(
+        build_digest_text(key, store.weekly_counters(key), now),
+        parse_mode="HTML")
+
+
 async def _reminder_loop(app):
     """Detyra në sfond: çdo ~30 min dërgon kujtesat e planifikuara.
     Gabimet kapen gjithmonë — loop-i s'rrëzon kurrë aplikacionin."""
     while True:
         try:
-            for act in plan_reminders(datetime.now(timezone.utc)):
+            acts = plan_reminders(datetime.now(timezone.utc))
+            acts += plan_digest(datetime.now(timezone.utc))
+            for act in acts:
                 try:
                     await app.bot.send_message(
                         act["chat_id"], act["text"], parse_mode="HTML")
@@ -1468,18 +2459,17 @@ async def talk_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await guard_client(update):
         return
     context.user_data["talk"] = True
+    lang = ulang(update.effective_user)
     await update.effective_message.reply_text(
-        "💬 <b>Je në bisedë direkte me Erionin.</b>\n"
-        "Shkruaj mesazhin tënd — i vjen atij menjëherë dhe përgjigjja të "
-        "kthehet këtu.\nPër t'u kthyer te menuja: /ndalo",
-        parse_mode="HTML")
+        t(lang, "talk_start"), parse_mode="HTML")
 
 
 async def talk_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("talk", None)
     if has_access(update.effective_user):
-        await update.effective_message.reply_text("U ktheve te menuja 👇",
-                                                  reply_markup=CLIENT_KB)
+        lang = ulang(update.effective_user)
+        await update.effective_message.reply_text(
+            t(lang, "talk_stop"), reply_markup=client_kb(lang))
 
 
 # ---------- F6: relay i plotë mediatik ----------
@@ -1506,7 +2496,8 @@ async def _deliver_to_client(context, target: int, msg) -> bool:
     marrë file-in/zërin siç u dërgua."""
     if getattr(msg, "text", None):
         await context.bot.send_message(
-            target, f"💬 <b>Erioni:</b>\n{msg.text}", parse_mode="HTML")
+            target, t(store.get_lang(target), "admin_says", text=msg.text),
+            parse_mode="HTML")
         return True
     if media_kind(msg):
         await context.bot.copy_message(
@@ -1585,19 +2576,33 @@ async def media_dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user is None or msg is None:
         return
     if is_admin(user):
+        # F5: kapja e zërit të mirëseardhjes ka përparësi mbi relay-n
+        if context.user_data.get("capture_voice"):
+            voice = getattr(msg, "voice", None)
+            if voice is not None:
+                store.set_welcome_voice(voice.file_id)
+                context.user_data.pop("capture_voice", None)
+                await msg.reply_text(
+                    "🎙 <b>U ruajt!</b> Mesazhi zanor i mirëseardhjes u "
+                    "vendos — klientët e rinj do ta marrin pas "
+                    "aktivizimit.\n/heq me /hiq_mireseardhjen.",
+                    parse_mode="HTML")
+                return
+            await msg.reply_text(
+                "🎙 Po pres një <b>mesazh zanor</b> — dërgoje tani, ose "
+                "/anulo për ta lënë siç është.", parse_mode="HTML")
+            return
         if await admin_pergjigju_step(update, context):
             return
         await admin_reply(update, context)
         return
+    lang = ulang(user)
     flow = context.user_data.get("flow") or {}
     if flow.get("kind"):
-        await msg.reply_text(
-            "Kjo rrjedhë pret tekst — shkruaj përgjigjen, ose /anulo "
-            "për t'u kthyer.")
+        await msg.reply_text(t(lang, "flow_needs_text"))
         return
     if not has_access(user):
-        await show_lock(update, context,
-                        "🔒 Ky bot është privat. Hyrja bëhet vetëm me kod personal.")
+        await show_lock(update, context, t(lang, "lock_note_private"))
         return
     if media_kind(msg) is None:
         return
@@ -1612,36 +2617,25 @@ async def media_dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ADMIN_ID, from_chat_id=msg.chat_id,
                 message_id=msg.message_id)
             store.map_relay(copied.message_id, user.id)
-            await msg.reply_text("✔️ U dërgua te Erioni.")
+            await msg.reply_text(t(lang, "talk_sent"))
         except Exception as e:
             log.warning("kopjimi i medias së klientit dështoi: %s", e)
-            await msg.reply_text("⚠️ Dërgimi dështoi — provo sërish.")
+            await msg.reply_text(t(lang, "talk_send_fail"))
     else:
-        await msg.reply_text(
-            "Për të dërguar foto, zë ose dokumente, aktivizo më parë "
-            "💬 <b>Fol me Erionin</b> nga menuja.", parse_mode="HTML")
-
-
-MENU_DISPATCH = {
-    "💼 Shërbimet": "services",
-    "🗂 Shembuj pune": "works",
-    "🎴 Kartvizita ime": "card",
-    "🎴 Kartvizita": "card",
-    "🔐 Aksesi im": "access",
-    "💬 Fol me Erionin": "talk",
-    "📝 Nis një projekt": "brief",
-    "🚧 Projekti im": "projects",
-    "🗓 Rezervo konsultë": "booking",
-    "❓ FAQ": "faq",
-    "📄 CV-ja ime": "cv",
-}
+        await msg.reply_text(t(lang, "talk_media_hint"), parse_mode="HTML")
 
 
 async def fallback_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Dispatch-i qendror i tekstit: rrjedhat aktive → menuja → relay → kyçja."""
     user = update.effective_user
     text = (update.message.text or "").strip()
+    lang = ulang(user)
     if is_admin(user):
+        if context.user_data.get("capture_voice"):  # F5: tekst ≠ zë
+            await update.message.reply_text(
+                "🎙 Po pres një <b>mesazh zanor</b> — dërgoje tani, ose "
+                "/anulo për ta lënë siç është.", parse_mode="HTML")
+            return
         if await admin_pergjigju_step(update, context):
             return
         await admin_reply(update, context)
@@ -1657,7 +2651,10 @@ async def fallback_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if kind == "brief":
         await brief_text_step(update, context)
         return
-    action = MENU_DISPATCH.get(text)
+    if kind == "review":  # F1: komenti i vlerësimit
+        await review_text_step(update, context)
+        return
+    action = MENU_ROUTES.get(text)
     if action == "services":
         await show_services(update, context)
         return
@@ -1688,6 +2685,9 @@ async def fallback_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if action == "booking":
         await booking_menu_start(update, context)
         return
+    if action == "lang":
+        await show_lang_chooser(update, context)
+        return
     if has_access(user):
         if context.user_data.get("talk"):
             sent = await context.bot.send_message(
@@ -1696,13 +2696,12 @@ async def fallback_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"(@{user.username or '—'}, id {user.id}):\n\n{update.message.text or ''}",
                 parse_mode="HTML")
             store.map_relay(sent.message_id, user.id)
-            await update.message.reply_text("✔️ Mesazhi u dërgua te Erioni.")
+            await update.message.reply_text(t(lang, "talk_sent"))
         else:
             await update.message.reply_text(
-                "Zgjidh nga menuja më poshtë 👇", reply_markup=CLIENT_KB)
+                t(lang, "menu_prompt"), reply_markup=client_kb(lang))
         return
-    await show_lock(update, context,
-                    "🔒 Ky bot është privat. Hyrja bëhet vetëm me kod personal.")
+    await show_lock(update, context, t(lang, "lock_note_private"))
 
 
 async def cancel_conv(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1710,10 +2709,12 @@ async def cancel_conv(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("brief", None)
     context.user_data.pop("booking", None)
     context.user_data.pop("reply_to", None)
+    context.user_data.pop("capture_voice", None)  # F5
     context.user_data.pop("flow", None)
+    lang = ulang(update.effective_user)
     if has_access(update.effective_user):
-        await update.effective_message.reply_text("U anulua.",
-                                                  reply_markup=CLIENT_KB)
+        await update.effective_message.reply_text(
+            t(lang, "cancelled"), reply_markup=client_kb(lang))
     else:
         await show_lock(update, context)
 
@@ -1876,9 +2877,18 @@ def build_app():
     app.add_handler(CommandHandler("slot_fshi", adm_slot_delete))
     app.add_handler(CommandHandler("njoftim", adm_broadcast))
     app.add_handler(CommandHandler("pergjigju", adm_pergjigju))
+    app.add_handler(CommandHandler("vleresime", adm_reviews))      # paketa 1–6 (F1)
+    app.add_handler(CommandHandler("mireseardhje", adm_voice_set))  # F5
+    app.add_handler(CommandHandler("hiq_mireseardhjen", adm_voice_clear))
+    app.add_handler(CommandHandler("raport", adm_report))           # F6
     # callback-et (secili me prefiksin e vet, pa konflikte)
+    app.add_handler(CallbackQueryHandler(lang_cb, pattern=r"^lang:(sq|en)$"))
     app.add_handler(CallbackQueryHandler(gate_code_cb, pattern=r"^gate:code$"))
     app.add_handler(CallbackQueryHandler(gate_req_cb, pattern=r"^gate:req$"))
+    app.add_handler(CallbackQueryHandler(review_stars_cb, pattern=r"^rev:s:"))
+    app.add_handler(CallbackQueryHandler(review_skip_cb, pattern=r"^rev:skip:"))
+    app.add_handler(CallbackQueryHandler(review_tskip_cb, pattern=r"^rev:tskip$"))
+    app.add_handler(CallbackQueryHandler(review_admin_cb, pattern=r"^revadm:"))
     app.add_handler(CallbackQueryHandler(req_service_cb, pattern=r"^svc:"))
     app.add_handler(CallbackQueryHandler(req_contact_skip, pattern=r"^req:nocontact$"))
     app.add_handler(CallbackQueryHandler(admin_decision_cb, pattern=r"^adm:(ok|no):[0-9a-f]+$"))
