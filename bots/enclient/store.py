@@ -25,8 +25,11 @@ Struktura e data.json:
                              "status": "pending"|"approved"|"rejected",
                              "created_at": iso} },
   "attempts": { "<user_id>": {"fails": int, "locked_until": iso|None,
-                              "window_start": iso} },
-  "relay":   { "<admin_msg_id>": int }   # msg i përcjellë te admini -> user_id i klientit
+                              "window_start": iso,
+                              "last_status": str|None} },
+  "relay":   { "<admin_msg_id>": int },  # msg i përcjellë te admini -> user_id i klientit
+  "daily":   { "<user_id>": {"<YYYY-MM-DD>": {"requests": int,
+                                              "briefs": int}} }
 }
 """
 import hashlib
@@ -88,18 +91,47 @@ class Store:
             with open(self.path, encoding="utf-8") as f:
                 d = json.load(f)
             if isinstance(d, dict):
-                for k in ("codes", "clients", "requests", "attempts", "relay"):
+                for k in ("codes", "clients", "requests", "attempts", "relay", "daily"):
                     d.setdefault(k, {})
                 return d
         except (OSError, ValueError):
             pass
-        return {"codes": {}, "clients": {}, "requests": {}, "attempts": {}, "relay": {}}
+        return {"codes": {}, "clients": {}, "requests": {}, "attempts": {},
+                "relay": {}, "daily": {}}
 
     def _save(self):
+        # pastro numëruesit ditorë më të vjetër se 2 ditë (mbahen të lehtë)
+        cutoff = (now_utc().date() - timedelta(days=2)).isoformat()
+        daily = self._data.get("daily") or {}
+        for uid in list(daily):
+            for day in list(daily[uid]):
+                if day < cutoff:
+                    del daily[uid][day]
+            if not daily[uid]:
+                del daily[uid]
         tmp = self.path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(self._data, f, ensure_ascii=False, indent=1)
         os.replace(tmp, self.path)
+
+    # ---------- numëruesit ditorë (anti-spam) ----------
+    @staticmethod
+    def _day_key(at: datetime = None) -> str:
+        return (at or now_utc()).date().isoformat()
+
+    def count_today(self, user_id: int, kind: str, at: datetime = None) -> int:
+        with self._lock:
+            rec = (self._data.get("daily") or {}).get(str(user_id)) or {}
+            return int((rec.get(self._day_key(at)) or {}).get(kind, 0))
+
+    def bump_today(self, user_id: int, kind: str, at: datetime = None) -> int:
+        at = at or now_utc()
+        with self._lock:
+            day = self._data["daily"].setdefault(str(user_id), {})
+            entry = day.setdefault(self._day_key(at), {"requests": 0, "briefs": 0})
+            entry[kind] = int(entry.get(kind, 0)) + 1
+            self._save()
+            return entry[kind]
 
     # ---------- kodet ----------
     def create_code(self, days: int = 30, note: str = "", at: datetime = None):
@@ -225,6 +257,31 @@ class Store:
             return {uid: dict(r) for uid, r in self._data["clients"].items()}
 
     # ---------- kërkesat për shërbim ----------
+    REQ_DAILY_MAX = 2      # kërkesa për shërbim për person, për ditë kalendarike
+    BRIEF_DAILY_MAX = 3    # brief-e projekti për klient, për ditë kalendarike
+
+    def pending_request_for(self, user_id: int):
+        """Kërkesa 'pending' e përdoruesit (nëse ka) — max 1 në të njëjtën kohë."""
+        with self._lock:
+            for rid, rec in self._data["requests"].items():
+                if rec.get("user_id") == user_id and rec.get("status") == "pending":
+                    out = dict(rec)
+                    out["id"] = rid
+                    return out
+            return None
+
+    def request_block(self, user_id: int, at: datetime = None):
+        """None nëse kërkesa e re lejohet; përndryshe arsyeja:
+        'pending' (ka një në pritje) | 'daily' (limiti ditor u arrit)."""
+        if self.pending_request_for(user_id) is not None:
+            return "pending"
+        if self.count_today(user_id, "requests", at=at) >= self.REQ_DAILY_MAX:
+            return "daily"
+        return None
+
+    def brief_block(self, user_id: int, at: datetime = None) -> bool:
+        return self.count_today(user_id, "briefs", at=at) >= self.BRIEF_DAILY_MAX
+
     def create_request(self, user_id: int, name: str, username: str,
                        service: str, contact: str, desc: str,
                        at: datetime = None) -> str:
@@ -238,6 +295,9 @@ class Store:
                 "service": service or "", "contact": contact or "", "desc": desc or "",
                 "status": "pending", "created_at": iso(at),
             }
+            day = self._data["daily"].setdefault(str(user_id), {})
+            entry = day.setdefault(self._day_key(at), {"requests": 0, "briefs": 0})
+            entry["requests"] = int(entry.get("requests", 0)) + 1
             self._save()
         return req_id
 
@@ -269,17 +329,23 @@ class Store:
             lu = parse_iso(rec.get("locked_until"))
             return bool(lu and at < lu)
 
-    def register_fail(self, user_id: int, at: datetime = None):
-        """Regjistron një kod të gabuar. Kthen True nëse sapo u kyç."""
+    def register_fail(self, user_id: int, status: str = None, at: datetime = None):
+        """Regjistron një tentativë të dështuar te dera. Kthen True nëse sapo
+        u kyç. `status` (arsyeja e saktë: invalid/expired/revoked/bound_other)
+        ruhet vetëm për adminin — vizitori sheh gjithmonë mesazh gjenerik."""
         at = at or now_utc()
         with self._lock:
             key = str(user_id)
             rec = self._data["attempts"].get(key) or {
-                "fails": 0, "locked_until": None, "window_start": iso(at)}
+                "fails": 0, "locked_until": None, "window_start": iso(at),
+                "last_status": None}
             ws = parse_iso(rec.get("window_start"))
             if ws is None or at - ws > timedelta(minutes=self.WINDOW_MINUTES):
-                rec = {"fails": 0, "locked_until": None, "window_start": iso(at)}
+                rec = {"fails": 0, "locked_until": None, "window_start": iso(at),
+                       "last_status": None}
             rec["fails"] = int(rec.get("fails", 0)) + 1
+            if status:
+                rec["last_status"] = status
             locked_now = False
             if rec["fails"] >= self.MAX_FAILS:
                 rec["locked_until"] = iso(at + timedelta(minutes=self.LOCK_MINUTES))
@@ -288,6 +354,11 @@ class Store:
             self._data["attempts"][key] = rec
             self._save()
             return locked_now
+
+    def last_fail_status(self, user_id: int):
+        with self._lock:
+            rec = self._data["attempts"].get(str(user_id)) or {}
+            return rec.get("last_status")
 
     def clear_fails(self, user_id: int):
         with self._lock:
