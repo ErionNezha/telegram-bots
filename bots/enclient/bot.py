@@ -221,6 +221,8 @@ CV_PATH = os.path.join(BASE, "assets", "CV-Erion-Nezha.pdf")
 CV_CAPTION = ("📄 CV-ja e Erion Nezhës — Software Developer\n"
               "Përvojë, aftësi dhe projekte — në një dokument.")
 
+WELCOME_VOICE_PATH = os.path.join(BASE, "assets", "welcome.ogg")
+
 CARD_PATH = os.path.join(BASE, "assets", "card.png")
 CARD_IMG_CAPTION = (
     "🎴 Kartvizita e Erion Nezhës — ruaje ose përcille te dikush që "
@@ -889,16 +891,31 @@ async def lang_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ---------------------------------------------------------------- F5: zëri i mirëseardhjes
 async def send_welcome_voice(context: ContextTypes.DEFAULT_TYPE, user_id: int):
-    """Dërgon mesazhin zanor të mirëseardhjes (nëse admini e ka
-    vendosur). Dështimi (file_id i vjetër etj.) kapet në heshtje —
+    """Dërgon mesazhin zanor të mirëseardhjes. Përparësia:
+    1) file_id i regjistruar nga admini (/mireseardhje);
+    2) zëri i paketës assets/welcome.ogg (Azure Ilir) — pas dërgimit
+       të parë, file_id që kthen Telegrami ruhet në settings dhe
+       dërgimet e tjera bëhen me të.
+    Dështimi (file_id i vjetër etj.) kapet në heshtje —
     aktivizimi s'prishet kurrë prej tij."""
     fid = store.get_welcome_voice()
-    if not fid:
+    if fid:
+        try:
+            await context.bot.send_voice(user_id, voice=fid)
+        except Exception as e:
+            log.warning("zëri i mirëseardhjes s'u dërgua te %s: %s",
+                        user_id, e)
+        return
+    if not os.path.isfile(WELCOME_VOICE_PATH):
         return
     try:
-        await context.bot.send_voice(user_id, voice=fid)
+        with open(WELCOME_VOICE_PATH, "rb") as f:
+            msg = await context.bot.send_voice(user_id, voice=f)
+        new_fid = getattr(getattr(msg, "voice", None), "file_id", None)
+        if new_fid:
+            store.set_welcome_voice(new_fid)
     except Exception as e:
-        log.warning("zëri i mirëseardhjes s'u dërgua te %s: %s", user_id, e)
+        log.warning("zëri i paketës s'u dërgua te %s: %s", user_id, e)
 
 
 async def adm_voice_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -907,13 +924,22 @@ async def adm_voice_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user):
         return
     fid = store.get_welcome_voice()
-    state = ("✅ <b>Është i vendosur</b> — klientët e rinj e marrin "
-             "automatikisht pas aktivizimit." if fid else
-             "ℹ️ <b>S'ka ende</b> mesazh zanor mirëseardhjeje.")
+    has_asset = os.path.isfile(WELCOME_VOICE_PATH)
+    if fid:
+        state = ("✅ <b>Aktiv (zëri yt i regjistruar)</b> — klientët e "
+                 "rinj e marrin automatikisht pas aktivizimit.")
+    elif has_asset:
+        state = ("✅ <b>Aktiv (zëri Ilir nga paketa)</b> — klientët e "
+                 "rinj marrin zërin e paketës, derisa të regjistrosh "
+                 "zërin tënd.")
+    else:
+        state = "ℹ️ <b>Joaktiv</b> — s'ka mesazh zanor mirëseardhjeje."
+    pkg_line = ("\nZëri i paketës (Ilir) është i përfshirë si "
+                "parazgjedhje." if has_asset else "")
     context.user_data["capture_voice"] = True
     await update.message.reply_text(
         "🎙 <b>Mesazhi zanor i mirëseardhjes</b>\n\n"
-        f"{state}\n\n"
+        f"{state}{pkg_line}\n\n"
         "Dërgo tani një <b>mesazh zanor</b> — ai do të ruhet dhe "
         "klientët e rinj do ta marrin pas aktivizimit.\n"
         "/anulo për ta lënë siç është.", parse_mode="HTML")
@@ -925,9 +951,14 @@ async def adm_voice_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if store.get_welcome_voice():
         store.set_welcome_voice(None)
-        await update.message.reply_text(
-            "🎙 Mesazhi zanor i mirëseardhjes u hoq — klientët e rinj "
-            "s'e marrin më.")
+        if os.path.isfile(WELCOME_VOICE_PATH):
+            await update.message.reply_text(
+                "🎙 Zëri yt u hoq — klientët e rinj tani marrin "
+                "zërin e paketës (Ilir).")
+        else:
+            await update.message.reply_text(
+                "🎙 Mesazhi zanor i mirëseardhjes u hoq — klientët "
+                "e rinj s'e marrin më.")
     else:
         await update.message.reply_text(
             "🎙 S'ka mesazh zanor mirëseardhjeje të vendosur.")
