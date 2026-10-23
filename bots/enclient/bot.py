@@ -706,6 +706,9 @@ STR = {
         "tour_next": "➡ Vazhdo",
         "tour_done_btn": "✅ E kuptova",
         "tour_closing": "🧭 <b>Gati je!</b>\n\nTani e njeh portalin tënd. Për çdo gjë, jam një mesazh larg — 💬 <b>Fol me Erionin</b>.",
+        # rregullimi UX: etiketat e menusë ndërpresin çdo rrjedhë aktive
+        "flow_interrupted": "U ndërpre rrjedha ku ishe — ja ku je tani.",
+        "brief_pick_hint": "Zgjidh njërin nga butonat më lart — ose shkruaj /anulo për ta lënë.",
     },
     "en": {
         "lock_text": (
@@ -841,6 +844,9 @@ STR = {
         "tour_next": "➡ Next",
         "tour_done_btn": "✅ Got it",
         "tour_closing": "🧭 <b>You're all set!</b>\n\nNow you know your portal. For anything at all, I'm one message away — 💬 <b>Talk to Erion</b>.",
+        # UX fix: menu labels interrupt any active flow
+        "flow_interrupted": "I left the flow you were in — here you are now.",
+        "brief_pick_hint": "Pick one of the buttons above — or type /anulo to leave it.",
     },
 }
 
@@ -1354,7 +1360,13 @@ async def req_text_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
     step = flow.get("step")
     lang = ulang(update.effective_user)
     text = (update.message.text or "").strip()
-    if step == "name":
+    if step == "service":
+        # Hapi pret buton inline (svc:); teksti i lirë → ri-pyetje + hint,
+        # jo heshtje (auditi i rrugëve pa përgjigje).
+        await update.message.reply_text(
+            t(lang, "req_title") + "\n\n" + t(lang, "brief_pick_hint"),
+            parse_mode="HTML", reply_markup=service_kb("svc", lang))
+    elif step == "name":
         context.user_data["req"]["name"] = text
         flow["step"] = "desc"
         await update.message.reply_text(t(lang, "req_desc"), parse_mode="HTML")
@@ -1733,7 +1745,20 @@ async def brief_text_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
     step = flow.get("step")
     lang = ulang(update.effective_user)
     text = (update.message.text or "").strip()
-    if step == "desc":
+    if step == "service":
+        # Hapi pret buton inline (briefsvc:); teksti i lirë s'gëlltitet
+        # më në heshtje — ri-dërgohet pyetja me një hint të butë.
+        await update.message.reply_text(
+            t(lang, "brief_title") + "\n\n" + t(lang, "brief_pick_hint"),
+            parse_mode="HTML", reply_markup=service_kb("briefsvc", lang))
+    elif step == "budget":
+        # Edhe hapi i buxhetit pret buton (briefbud:) — njësoj si më lart.
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton(b, callback_data=f"briefbud:{i}")]
+                                    for i, b in enumerate(budgets_for(lang))])
+        await update.message.reply_text(
+            t(lang, "brief_budget_q") + "\n\n" + t(lang, "brief_pick_hint"),
+            reply_markup=kb)
+    elif step == "desc":
         context.user_data["brief"]["desc"] = text
         flow["step"] = "budget"
         kb = InlineKeyboardMarkup([[InlineKeyboardButton(b, callback_data=f"briefbud:{i}")]
@@ -2713,6 +2738,30 @@ async def book_slot_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("booking", None)
 
 
+async def booking_text_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Teksti gjatë rrjedhës së rezervimit: të dy hapat (shërbimi,
+    orari) presin butona inline — teksti i lirë ri-dërgon hapin aktual
+    me hint, pa e prishur dhe pa e lënë pa përgjigje rrjedhën."""
+    flow = context.user_data["flow"]
+    lang = ulang(update.effective_user)
+    hint = "\n\n" + t(lang, "brief_pick_hint")
+    if flow.get("step") == "slot":
+        slots = store.open_slots()
+        if slots:
+            await update.message.reply_text(
+                t(lang, "book_pick_slot") + hint, parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(_slot_rows(slots, lang)))
+            return
+        context.user_data.pop("flow", None)
+        context.user_data.pop("booking", None)
+        await update.message.reply_text(
+            t(lang, "book_no_slots"), parse_mode="HTML")
+        return
+    await update.message.reply_text(
+        t(lang, "book_start") + hint, parse_mode="HTML",
+        reply_markup=service_kb("booksvc", lang))
+
+
 async def booking_cancel_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Paketa 4 (3c): klienti anulon vetë kërkesën e tij të konsultës
     në pritje (book:cancel:<id>). Rezervimi 'pending' s'e ka konsumuar
@@ -3530,6 +3579,140 @@ async def media_dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.reply_text(t(lang, "talk_media_hint"), parse_mode="HTML")
 
 
+def _exit_client_flow(context: ContextTypes.DEFAULT_TYPE):
+    """Del nga çdo rrjedhë klienti aktive (brief / rezervim / vlerësim /
+    bisedë direkte) dhe pastron të dhënat e përkohshme të rrjedhës."""
+    context.user_data.pop("flow", None)
+    context.user_data.pop("brief", None)
+    context.user_data.pop("booking", None)
+    context.user_data.pop("talk", None)
+
+
+async def _route_menu_action(update: Update, context: ContextTypes.DEFAULT_TYPE,
+                             action: str, lang: str) -> bool:
+    """Navigimi i menusë së klientit sipas veprimit (MENU_ROUTES).
+    Kthen True kur veprimi u trajtua. Sjellja është e njëjtë si
+    dispatch-i i mëparshëm në gjendje idle — përfshirë portat e
+    aksesit te home/guide/more për vizitorët."""
+    user = update.effective_user
+    if action == "services":
+        await show_services(update, context)
+    elif action == "works":
+        await show_works(update, context)
+    elif action == "card":
+        await show_card(update, context)
+    elif action == "access":
+        await show_access(update, context)
+    elif action == "talk":
+        await talk_start(update, context)
+    elif action == "brief":
+        await brief_menu_start(update, context)
+    elif action == "faq":
+        await show_faq(update, context)
+    elif action == "cv":
+        await show_cv(update, context)
+    elif action == "projects":
+        await show_projects(update, context)
+    elif action == "booking":
+        await booking_menu_start(update, context)
+    elif action == "lang":
+        await show_lang_chooser(update, context)
+    elif action == "home":
+        # paketa 4: 🏠 Kreu — kthen te faqja kryesore me tastierën
+        # kryesore nga kudo
+        if not has_access(user):
+            await show_lock(update, context, t(lang, "lock_note_private"))
+            return True
+        await show_home(update, context)
+    elif action == "guide":
+        # paketa 4: 🧭 Udhëzuesi — rinis turin, edhe pas përfundimit
+        if not has_access(user):
+            await show_lock(update, context, t(lang, "lock_note_private"))
+            return True
+        await start_tour(context, user.id, lang)
+    elif action in ("more", "back_home"):
+        # paketa 3 (F4): ndërrimi kryesore <-> "Më shumë"
+        if not has_access(user):
+            await show_lock(update, context, t(lang, "lock_note_private"))
+            return True
+        await update.message.reply_text(
+            t(lang, "menu_prompt"),
+            reply_markup=client_kb(lang, more=(action == "more")))
+    else:
+        return False
+    return True
+
+
+async def _client_text_dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE,
+                                text: str, lang: str,
+                                admin_tester: bool = False) -> bool:
+    """Trajtimi i tekstit për zonën e klientit. Kthen True kur teksti
+    u trajtua; False kur s'ka asgjë për të bërë (vetëm admini në idle
+    me tekst të rastësishëm — heshtja e vjetër e adminit ruhet).
+
+    RREGULLI I RI (rregullimi UX): etiketa e menusë (MENU_ROUTES, të
+    dyja gjuhët) NDËRPRET çdo rrjedhë aktive — brief, rezervim,
+    vlerësim, bisedë — në vend që të gëlltitet prej saj (bug-u i
+    screenshot-it: "☰ Më shumë" gjatë brief-it s'prodhonte asgjë).
+    Vizitori i kyçur përjashtohet: rrjedhat e derës (code/req) e
+    konsumojnë tekstin si më parë, pa ndryshim."""
+    user = update.effective_user
+    flow = context.user_data.get("flow") or {}
+    kind = flow.get("kind")
+    # --- dera (vizitori): gjendja e kyçjes NUK ndryshon ---
+    if kind == "code":
+        await code_text(update, context)
+        return True
+    if kind == "req":
+        await req_text_step(update, context)
+        return True
+    action = MENU_ROUTES.get(text)
+    talking = bool(context.user_data.get("talk"))
+    in_flow = kind in ("brief", "booking", "review") or talking
+    # --- ndërprerja globale: etiketa e menusë mund çdo rrjedhë ---
+    if action and in_flow and has_access(user):
+        same_flow = ((action == "brief" and kind == "brief")
+                     or (action == "booking" and kind == "booking")
+                     or (action == "talk" and talking and kind is None))
+        _exit_client_flow(context)
+        if not same_flow:
+            # shënimi dërgohet NJË herë, vetëm kur rrjedha braktiset
+            # vërtet; rinisja e së njëjtës rrjedhë s'ka nevojë për të
+            await update.message.reply_text(t(lang, "flow_interrupted"))
+        await _route_menu_action(update, context, action, lang)
+        return True
+    # --- rrjedhat që presin tekst ---
+    if kind == "brief":
+        await brief_text_step(update, context)
+        return True
+    if kind == "review":  # F1: komenti i vlerësimit
+        await review_text_step(update, context)
+        return True
+    if kind == "booking":
+        await booking_text_step(update, context)
+        return True
+    # --- idle: navigimi normal i menusë ---
+    if action:
+        return await _route_menu_action(update, context, action, lang)
+    if admin_tester:
+        return False
+    if has_access(user):
+        if talking:
+            sent = await context.bot.send_message(
+                ADMIN_ID,
+                f"💬 <b>Mesazh nga klienti</b> {user.first_name or ''} "
+                f"(@{user.username or '—'}, id {user.id}):\n\n{update.message.text or ''}",
+                parse_mode="HTML")
+            store.map_relay(sent.message_id, user.id)
+            await update.message.reply_text(t(lang, "talk_sent"))
+            await _maybe_after_hours(context, user, lang)
+        else:
+            await update.message.reply_text(
+                t(lang, "menu_prompt"), reply_markup=client_kb(lang))
+        return True
+    return False
+
+
 async def fallback_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Dispatch-i qendror i tekstit: rrjedhat aktive → menuja → relay → kyçja."""
     user = update.effective_user
@@ -3544,92 +3727,13 @@ async def fallback_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if await admin_pergjigju_step(update, context):
             return
         await admin_reply(update, context)
+        # Admini duke testuar ekranet e klientit: etiketat e menusë dhe
+        # rrjedhat e klientit trajtohen njësoj si për klientin — teksti
+        # i rastësishëm në idle mbetet pa përgjigje, si më parë.
+        await _client_text_dispatch(update, context, text, lang,
+                                    admin_tester=True)
         return
-    flow = context.user_data.get("flow") or {}
-    kind = flow.get("kind")
-    if kind == "code":
-        await code_text(update, context)
-        return
-    if kind == "req":
-        await req_text_step(update, context)
-        return
-    if kind == "brief":
-        await brief_text_step(update, context)
-        return
-    if kind == "review":  # F1: komenti i vlerësimit
-        await review_text_step(update, context)
-        return
-    action = MENU_ROUTES.get(text)
-    if action == "services":
-        await show_services(update, context)
-        return
-    if action == "works":
-        await show_works(update, context)
-        return
-    if action == "card":
-        await show_card(update, context)
-        return
-    if action == "access":
-        await show_access(update, context)
-        return
-    if action == "talk":
-        await talk_start(update, context)
-        return
-    if action == "brief":
-        await brief_menu_start(update, context)
-        return
-    if action == "faq":
-        await show_faq(update, context)
-        return
-    if action == "cv":
-        await show_cv(update, context)
-        return
-    if action == "projects":
-        await show_projects(update, context)
-        return
-    if action == "booking":
-        await booking_menu_start(update, context)
-        return
-    if action == "lang":
-        await show_lang_chooser(update, context)
-        return
-    if action == "home":
-        # paketa 4: 🏠 Kreu — rreshti i parë i tastierës "Më shumë";
-        # kthen te faqja kryesore me tastierën kryesore nga kudo
-        if not has_access(user):
-            await show_lock(update, context, t(lang, "lock_note_private"))
-            return
-        await show_home(update, context)
-        return
-    if action == "guide":
-        # paketa 4: 🧭 Udhëzuesi — rinis turin, edhe pas përfundimit
-        if not has_access(user):
-            await show_lock(update, context, t(lang, "lock_note_private"))
-            return
-        await start_tour(context, user.id, lang)
-        return
-    if action in ("more", "back_home"):
-        # paketa 3 (F4): ndërrimi kryesore <-> "Më shumë"
-        if not has_access(user):
-            await show_lock(update, context, t(lang, "lock_note_private"))
-            return
-        await update.message.reply_text(
-            t(lang, "menu_prompt"),
-            reply_markup=client_kb(lang, more=(action == "more")))
-        return
-    if has_access(user):
-        if context.user_data.get("talk"):
-            sent = await context.bot.send_message(
-                ADMIN_ID,
-                f"💬 <b>Mesazh nga klienti</b> {user.first_name or ''} "
-                f"(@{user.username or '—'}, id {user.id}):\n\n{update.message.text or ''}",
-                parse_mode="HTML")
-            store.map_relay(sent.message_id, user.id)
-            await update.message.reply_text(t(lang, "talk_sent"))
-            await _maybe_after_hours(context, user, lang)
-        else:
-            await update.message.reply_text(
-                t(lang, "menu_prompt"), reply_markup=client_kb(lang))
+    if await _client_text_dispatch(update, context, text, lang):
         return
     await show_lock(update, context, t(lang, "lock_note_private"))
 
