@@ -50,8 +50,22 @@ Struktura e data.json:
   "agreements": { "<agr_id>": {"client_id": int,
                                "project_id": str|None, "title": str,
                                "status": "pending"|"accepted"|"declined",
-                               "sent_at": iso, "decided_at": iso|None} }
+                               "sent_at": iso, "decided_at": iso|None} },
+  "briefs":   { "<brief_id>": {"client_id": int, "name": str,
+                               "username": str, "service": str,
+                               "service_key": str, "desc": str,
+                               "budget": str, "deadline": str,
+                               "contact": str, "created_at": iso,
+                               "project_id": str|None} }
 }
+Klienti ka edhe fusha opsionale (paketa 4): "notes" — lista e
+shënimeve PRIVATE të adminit [{"ts": iso, "text": str}] (shfaqen
+vetëm te /dosja) dhe "tour_done" (bool) — udhëzuesi i klientit të ri
+u përfundua. Të dyja ruhen edhe kur klienti riaktivizohet.
+settings ka edhe (paketa 4): "last_link_check" (data lokale
+YYYY-MM-DD e kontrollit të fundit javor të linkeve) dhe
+"last_pending_digest" (data lokale e kujtesës së fundit të mëngjesit
+për pikat në pritje).
 settings ka edhe (paketa 3): "work_start"/"work_end" ("HH:MM", orari i
 punës për përgjigjen automatike jashtë orarit; default 09:00–18:00),
 "work_weekend" (bool, default False — e shtuna/e diela jashtë orarit)
@@ -140,7 +154,7 @@ class Store:
             if isinstance(d, dict):
                 for k in ("codes", "clients", "requests", "attempts", "relay",
                           "daily", "settings", "projects", "slots",
-                          "bookings", "reviews", "agreements"):
+                          "bookings", "reviews", "agreements", "briefs"):
                     d.setdefault(k, {})
                 return d
         except (OSError, ValueError):
@@ -148,7 +162,7 @@ class Store:
         return {"codes": {}, "clients": {}, "requests": {}, "attempts": {},
                 "relay": {}, "daily": {}, "settings": {}, "projects": {},
                 "slots": {}, "bookings": {}, "reviews": {},
-                "agreements": {}}
+                "agreements": {}, "briefs": {}}
 
     def _save(self):
         # pastro numëruesit ditorë më të vjetër se 2 ditë (mbahen të lehtë)
@@ -342,7 +356,7 @@ class Store:
             ).get(str(user_id)) or "sq"
             if lang not in ("sq", "en"):
                 lang = "sq"
-            self._data["clients"][str(user_id)] = {
+            new_rec = {
                 "name": name or "",
                 "username": username or "",
                 "service": service or "",
@@ -352,6 +366,13 @@ class Store:
                 "revoked": False,
                 "lang": lang,
             }
+            # paketa 4: shënimet private të adminit + flamuri i turit
+            # mbijetojnë riaktivizimin e klientit
+            if existing:
+                for k in ("notes", "tour_done"):
+                    if existing.get(k):
+                        new_rec[k] = existing[k]
+            self._data["clients"][str(user_id)] = new_rec
             if existing is None:  # klient vërtet i ri → numëruesi javor (F6)
                 self._bump_weekly_locked("clients", at)
             self._save()
@@ -820,6 +841,14 @@ class Store:
             rec = self._data["agreements"].get(agr_id)
             return dict(rec) if rec else None
 
+    def list_agreements(self, status: str = None):
+        """Të gjitha marrëveshjet (kopje), opsionalisht me filtër
+        statusi — përdoret nga dosja dhe kujtesa e mëngjesit."""
+        with self._lock:
+            out = [dict(r) for r in self._data["agreements"].values()
+                   if status is None or r.get("status") == status]
+        return sorted(out, key=lambda r: r.get("sent_at") or "")
+
     def pending_agreement_for(self, client_id: int):
         """Marrëveshja në pritje e klientit (më e reja), ose None."""
         with self._lock:
@@ -880,3 +909,104 @@ class Store:
                 for k in list(notices)[:-300]:
                     del notices[k]
             self._save()
+
+    # ---------- cilësimet: ndihmës gjenerikë (paketa 4) ----------
+    def get_setting(self, key: str, default=None):
+        with self._lock:
+            return (self._data.get("settings") or {}).get(key, default)
+
+    def set_setting(self, key: str, value):
+        with self._lock:
+            self._data.setdefault("settings", {})[key] = value
+            self._save()
+
+    # ---------- brief-et e projekteve (paketa 4) ----------
+    def create_brief(self, client_id: int, name: str, username: str,
+                     data: dict, at: datetime = None):
+        """Ruan brief-in e projektit si regjistër me id unik — admini
+        vepron mbi të me butonat e njoftimit (krijo projekt /
+        marrëveshje / përgjigju). 'project_id' vendoset kur projekti
+        krijohet prej këtij brief-i."""
+        at = at or now_utc()
+        bid = secrets.token_hex(4)
+        d = data or {}
+        with self._lock:
+            while bid in self._data["briefs"]:
+                bid = secrets.token_hex(4)
+            rec = {"id": bid, "client_id": int(client_id),
+                   "name": name or "", "username": username or "",
+                   "service": d.get("service") or "",
+                   "service_key": d.get("service_key") or "",
+                   "desc": d.get("desc") or "",
+                   "budget": d.get("budget") or "",
+                   "deadline": d.get("deadline") or "",
+                   "contact": d.get("contact") or "",
+                   "created_at": iso(at), "project_id": None}
+            self._data["briefs"][bid] = rec
+            self._save()
+        return dict(rec)
+
+    def get_brief(self, brief_id: str):
+        with self._lock:
+            rec = self._data["briefs"].get(brief_id)
+            return dict(rec) if rec else None
+
+    def list_briefs(self, client_id: int = None):
+        """Të gjitha brief-et (ose vetëm të një klienti), nga më i
+        vjetri te më i riu."""
+        with self._lock:
+            out = [dict(r) for r in self._data["briefs"].values()
+                   if client_id is None
+                   or r.get("client_id") == int(client_id)]
+        return sorted(out, key=lambda r: r.get("created_at") or "")
+
+    def set_brief_project(self, brief_id: str, project_id: str) -> bool:
+        with self._lock:
+            rec = self._data["briefs"].get(brief_id)
+            if rec is None:
+                return False
+            rec["project_id"] = project_id
+            self._save()
+            return True
+
+    # ---------- shënimet private të adminit + turi (paketa 4) ----------
+    def add_client_note(self, user_id: int, text: str,
+                        at: datetime = None):
+        """Shton shënim privat të adminit te regjistri i klientit.
+        Kthen shënimin e ruajtur ose None nëse klienti s'ekziston."""
+        at = at or now_utc()
+        text = (text or "").strip()
+        if not text:
+            return None
+        with self._lock:
+            rec = self._data["clients"].get(str(user_id))
+            if rec is None:
+                return None
+            note = {"ts": iso(at), "text": text}
+            rec.setdefault("notes", []).append(note)
+            self._save()
+            return dict(note)
+
+    def client_notes(self, user_id: int):
+        with self._lock:
+            rec = self._data["clients"].get(str(user_id)) or {}
+            return [dict(n) for n in rec.get("notes") or []]
+
+    def set_tour_done(self, user_id: int, val: bool = True) -> bool:
+        with self._lock:
+            rec = self._data["clients"].get(str(user_id))
+            if rec is None:
+                return False
+            rec["tour_done"] = bool(val)
+            self._save()
+            return True
+
+    def latest_agreement_for(self, client_id: int):
+        """Marrëveshja më e fundit e klientit (çdo status), ose None
+        — përdoret te dosja e klientit (paketa 4)."""
+        with self._lock:
+            out = [dict(r) for r in self._data["agreements"].values()
+                   if r.get("client_id") == int(client_id)]
+        if not out:
+            return None
+        return sorted(out, key=lambda r: r.get("sent_at") or "")[-1]

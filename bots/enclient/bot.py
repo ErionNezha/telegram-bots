@@ -54,6 +54,15 @@ Komandat e adminit (vetëm ADMIN_ID):
   /orari <HH:MM-HH:MM>         (paketa 3: orari i punës)
   /orari_fundjave on|off       (paketa 3: fundjava në orar pune)
 
+Paketa 4 (2026-10-23):
+  roja javore e linkeve (WORKS/WORKS_EN + Web App — hesht kur
+  gjithçka punon), veprimet një-prekje të adminit mbi njoftimin e
+  brief-it (krijo projekt / dërgo marrëveshje / përgjigju; brief-et
+  ruhen me id), dosja e klientit /dosja + shënimet private
+  /shenim_klienti, turi udhëzues i klientit të ri (🧭 Udhëzuesi),
+  anulimi i rezervimit nga vetë klienti, butoni 🏠 Kreu te
+  "Më shumë" dhe kujtesa e mëngjesit për pikat në pritje > 24 orë.
+
 Paketa 3 (2026-10-22):
   menu e thjeshtuar (kryesore + "☰ Më shumë"), galeria vizuale e
   punëve (album me pamje reale nga assets/gallery/), butoni i Mini
@@ -72,7 +81,9 @@ import logging
 import os
 import re
 import sys
+import urllib.error
 import urllib.parse
+import urllib.request
 from datetime import datetime, timedelta, timezone
 
 try:
@@ -385,14 +396,16 @@ CLIENT_KB_EN = ReplyKeyboardMarkup(
     resize_keyboard=True,
 )
 CLIENT_KB_MORE = ReplyKeyboardMarkup(
-    [["🗓 Rezervo konsultë", "❓ FAQ"],
+    [["🏠 Kreu", "🧭 Udhëzuesi"],
+     ["🗓 Rezervo konsultë", "❓ FAQ"],
      ["📄 CV-ja ime", "🎴 Kartvizita ime"],
      ["🔐 Aksesi im", "🌍 Gjuha"],
      ["⬅ Mbrapa"]],
     resize_keyboard=True,
 )
 CLIENT_KB_MORE_EN = ReplyKeyboardMarkup(
-    [["🗓 Book a consultation", "❓ FAQ"],
+    [["🏠 Home", "🧭 Guide"],
+     ["🗓 Book a consultation", "❓ FAQ"],
      ["📄 My CV", "🎴 My card"],
      ["🔐 My access", "🌍 Language"],
      ["⬅ Back"]],
@@ -424,6 +437,9 @@ MENU_ROUTES = {
     "🌍 Gjuha": "lang", "🌍 Language": "lang",
     "☰ Më shumë": "more", "☰ More": "more",
     "⬅ Mbrapa": "back_home", "⬅ Back": "back_home",
+    # paketa 4: Kreu (rreshti i parë i "Më shumë") + Udhëzuesi (turi)
+    "🏠 Kreu": "home", "🏠 Home": "home",
+    "🧭 Udhëzuesi": "guide", "🧭 Guide": "guide",
 }
 
 LOCK_TEXT = (
@@ -676,6 +692,20 @@ STR = {
         "agreement_done": "Kjo marrëveshje është vendosur tashmë.",
         "agreement_pdf_caption": "✍ Marrëveshja jote e bashkëpunimit — e pranuar dixhitalisht në këtë portal.",
         "after_hours": "Faleminderit për mesazhin — u mor dhe iu përcoll Erionit. Orari i tij i punës është gjatë ditëve të javës; përgjigjja vjen sapo të nisë orari i punës. Për gjëra urgjente, lëre mesazhin këtu — e sheh gjithçka me radhë.",
+        # paketa 4: Kreu/Udhëzuesi, anulimi i rezervimit, turi, nisja e projektit
+        "menu_home": "🏠 Kreu",
+        "menu_guide": "🧭 Udhëzuesi",
+        "book_cancel_btn": "❌ Anulo rezervimin",
+        "book_cancelled": "🗓 <b>Kërkesa për konsultë u anulua.</b>\n\nErioni u njoftua. Nëse do një orar tjetër, nis sërish nga 🗓 <b>Rezervo konsultë</b>.",
+        "book_cancel_done": "Ky rezervim është vendosur tashmë.",
+        "project_started": "🚧 <b>Projekti yt nisi!</b>\n\nErioni e hapi projektin tënd — ecuria ndiqet këtu, fazë pas faze.",
+        "tour_s1": "🧭 <b>Mirë se erdhe në turin e portalit tënd</b>\n\n💼 <b>Shërbimet</b>\nKëtu gjen gjithçka që ndërtoj: faqe interneti, aplikacione, botë Telegram, dizajn dhe marketing — me detaje për secilin shërbim.",
+        "tour_s2": "🗂 <b>Shembuj pune</b> dhe 📸 <b>Galeria</b>\nShiko punë reale, të përfunduara dhe live — me pamje të vërteta të projekteve, jo vetëm përshkrime.",
+        "tour_s3": "📝 <b>Nis një projekt</b>\nKur të jesh gati, plotëso brief-in e shkurtër: lloji, përshkrimi, buxheti dhe afati. E lexoj dhe të përgjigjem me hapat e radhës.",
+        "tour_s4": "🗓 <b>Rezervo konsultë</b> dhe 💬 <b>Fol me Erionin</b>\nZgjidh një orar të lirë për konsultë, ose shkruaj direkt në bisedë — mesazhet e tua më vijnë drejtpërdrejt.",
+        "tour_next": "➡ Vazhdo",
+        "tour_done_btn": "✅ E kuptova",
+        "tour_closing": "🧭 <b>Gati je!</b>\n\nTani e njeh portalin tënd. Për çdo gjë, jam një mesazh larg — 💬 <b>Fol me Erionin</b>.",
     },
     "en": {
         "lock_text": (
@@ -797,6 +827,20 @@ STR = {
         "agreement_done": "This agreement has already been decided.",
         "agreement_pdf_caption": "✍ Your cooperation agreement — accepted digitally in this portal.",
         "after_hours": "Thank you for your message — it was received and forwarded to Erion. His working hours are on weekdays; he'll reply as soon as working hours start. For anything urgent, leave your message here — he sees everything in order.",
+        # pack 4: Home/Guide, booking cancel, tour, project start
+        "menu_home": "🏠 Home",
+        "menu_guide": "🧭 Guide",
+        "book_cancel_btn": "❌ Cancel booking",
+        "book_cancelled": "🗓 <b>Your consultation request was cancelled.</b>\n\nErion has been notified. If you'd like another time, start again from 🗓 <b>Book a consultation</b>.",
+        "book_cancel_done": "This booking has already been decided.",
+        "project_started": "🚧 <b>Your project has started!</b>\n\nErion has opened your project — its progress is tracked here, stage by stage.",
+        "tour_s1": "🧭 <b>Welcome to your portal tour</b>\n\n💼 <b>Services</b>\nHere you'll find everything I build: websites, apps, Telegram bots, design and marketing — with details for each service.",
+        "tour_s2": "🗂 <b>Work samples</b> and 📸 <b>the Gallery</b>\nSee real work — finished and live — with actual screenshots of the projects, not just descriptions.",
+        "tour_s3": "📝 <b>Start a project</b>\nWhen you're ready, fill in the short brief: type, description, budget and deadline. I'll read it and reply with the next steps.",
+        "tour_s4": "🗓 <b>Book a consultation</b> and 💬 <b>Talk to Erion</b>\nPick a free slot for a consultation, or write directly in the chat — your messages reach me straight away.",
+        "tour_next": "➡ Next",
+        "tour_done_btn": "✅ Got it",
+        "tour_closing": "🧭 <b>You're all set!</b>\n\nNow you know your portal. For anything at all, I'm one message away — 💬 <b>Talk to Erion</b>.",
     },
 }
 
@@ -961,7 +1005,12 @@ async def show_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"{'e hapur' if store.get_work_settings()['weekend'] else 'e mbyllur'}); "
             "jashtë tij klienti merr përgjigjen automatike\n"
             "/orari_fundjave on|off — hap/mbyll fundjavën si orar pune\n"
-            "/raport — raporti javor (këtë javë) + pikat në pritje",
+            "/raport — raporti javor (këtë javë) + pikat në pritje\n"
+            "/dosja &lt;user_id&gt; — dosja e plotë e klientit (paketa 4): "
+            "aksesi, projektet, rezervimet, marrëveshja, vlerësimet, "
+            "shënimet e tua private\n"
+            "/shenim_klienti &lt;user_id&gt; &lt;teksti&gt; — shënim "
+            "privat te dosja e klientit (paketa 4)",
             parse_mode="HTML")
 
 
@@ -1084,6 +1133,85 @@ async def adm_voice_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🎙 S'ka mesazh zanor mirëseardhjeje të vendosur.")
 
 
+# ---------------------------------------------------------------- paketa 4: turi udhëzues i klientit të ri
+TOUR_STEP_KEYS = ("tour_s1", "tour_s2", "tour_s3", "tour_s4")
+
+
+def _tour_text(lang: str, step: int) -> str:
+    """Teksti i hapit të turit + treguesi i progresit VETËM me
+    simbole (●/○) — pa shifra (urdhri 'mos vendos shifra')."""
+    step = max(1, min(len(TOUR_STEP_KEYS), int(step)))
+    dots = "●" * step + "○" * (len(TOUR_STEP_KEYS) - step)
+    return dots + "\n\n" + t(lang, TOUR_STEP_KEYS[step - 1])
+
+
+def _tour_kb(lang: str, step: int):
+    step = max(1, min(len(TOUR_STEP_KEYS), int(step)))
+    if step < len(TOUR_STEP_KEYS):
+        return InlineKeyboardMarkup([[InlineKeyboardButton(
+            t(lang, "tour_next"), callback_data=f"tour:next:{step + 1}")]])
+    return InlineKeyboardMarkup([[InlineKeyboardButton(
+        t(lang, "tour_done_btn"), callback_data="tour:done")]])
+
+
+async def start_tour(context: ContextTypes.DEFAULT_TYPE, user_id: int,
+                     lang: str = None):
+    """Nis turin udhëzues (hapi i parë) si mesazh i ri — pas
+    aktivizimit të klientit të ri dhe nga butoni 🧭 Udhëzuesi."""
+    lang = lang or store.get_lang(user_id)
+    try:
+        await context.bot.send_message(
+            user_id, _tour_text(lang, 1), parse_mode="HTML",
+            reply_markup=_tour_kb(lang, 1))
+    except Exception as e:
+        log.warning("turi s'u nis për %s: %s", user_id, e)
+
+
+async def _maybe_start_tour(context: ContextTypes.DEFAULT_TYPE,
+                            user_id: int):
+    """Pas aktivizimit: turi nis VETËM nëse klienti s'e ka përfunduar
+    ndonjëherë (tour_done). Dështimet kapen në heshtje."""
+    try:
+        rec = store.get_client_any(user_id) or {}
+        if not rec.get("tour_done"):
+            await start_tour(context, user_id, store.get_lang(user_id))
+    except Exception as e:
+        log.warning("kontrolli i turit dështoi për %s: %s", user_id, e)
+
+
+async def tour_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Hapat e turit (tour:next:<n>) + mbyllja (tour:done): mesazhi
+    i turit EDITOHET hap pas hapi; në fund shënohet tour_done."""
+    q = update.callback_query
+    user = q.from_user
+    lang = ulang(user)
+    if not has_access(user):
+        await q.answer(t(lang, "locked_alert"), show_alert=True)
+        return
+    await q.answer()
+    data = q.data or ""
+    if data == "tour:done":
+        store.set_tour_done(user.id, True)
+        try:
+            await q.edit_message_text(t(lang, "tour_closing"),
+                                      parse_mode="HTML")
+        except Exception:
+            pass
+        return
+    try:
+        step = int(data.rsplit(":", 1)[1])
+    except (ValueError, IndexError):
+        return
+    if not (1 <= step <= len(TOUR_STEP_KEYS)):
+        return
+    try:
+        await q.edit_message_text(_tour_text(lang, step),
+                                  parse_mode="HTML",
+                                  reply_markup=_tour_kb(lang, step))
+    except Exception:
+        pass
+
+
 # ---------------------------------------------------------------- /start
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -1139,6 +1267,7 @@ async def try_redeem(update: Update, context: ContextTypes.DEFAULT_TYPE, code: s
                            f"📝 Shënimi i kodit: {rec.get('note') or '—'}")
         await show_home(update, context)
         await send_welcome_voice(context, user.id)  # F5
+        await _maybe_start_tour(context, user.id)  # paketa 4: turi
     else:
         await _gate_fail(update, context, status)
 
@@ -1330,6 +1459,7 @@ async def admin_decision_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 status=store.get_status()),
             parse_mode="HTML", reply_markup=client_kb(clang))
         await send_welcome_voice(context, req["user_id"])  # F5
+        await _maybe_start_tour(context, req["user_id"])  # paketa 4: turi
     except Exception as e:
         log.warning("miratimi s'u dërgua: %s", e)
     # Fiks 4: backup automatik pas aktivizimit të klientit të ri
@@ -1876,6 +2006,42 @@ def build_agreement_pdf(agr: dict, client_name: str, decided_local: str,
     return bytes(out)
 
 
+async def _send_agreement(context: ContextTypes.DEFAULT_TYPE, uid: int):
+    """Bërthama e dërgimit të marrëveshjes dixhitale — përdoret nga
+    /marreveshje dhe nga butoni brief:agr (paketa 4). Objekti është
+    projekti më i fundit i klientit (çdo status); pa projekt →
+    objekti i përgjithshëm i lokalizuar. Maks. një në pritje.
+    Kthen (status, title): 'no_client' | 'pending' | 'failed' | 'sent'."""
+    rec = store.get_client_any(uid)
+    if not rec:
+        return "no_client", ""
+    if store.pending_agreement_for(uid):
+        return "pending", ""
+    projects = store.list_projects(uid)
+    proj = projects[-1] if projects else None
+    lang_c = store.get_lang(uid)
+    title = (proj or {}).get("title") or t(lang_c,
+                                           "agreement_subject_default")
+    agr = store.create_agreement(uid, (proj or {}).get("id"), title)
+    if agr is None:  # garë e rrallë: sapo u krijua një tjetër
+        return "pending", title
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton(t(lang_c, "agreement_accept"),
+                             callback_data="agr:accept"),
+        InlineKeyboardButton(t(lang_c, "agreement_decline"),
+                             callback_data="agr:decline"),
+    ]])
+    text = (t(lang_c, "agreement_intro", title=title) + "\n\n"
+            + t(lang_c, "agreement_terms"))
+    try:
+        await context.bot.send_message(uid, text, parse_mode="HTML",
+                                       reply_markup=kb)
+    except Exception as e:
+        log.warning("marrëveshja s'u dërgua te %s: %s", uid, e)
+        return "failed", title
+    return "sent", title
+
+
 async def adm_agreement(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/marreveshje <user_id> — i dërgon klientit marrëveshjen dixhitale
     për projektin e tij më të fundit (çdo status); pa projekt → objekti
@@ -1897,29 +2063,12 @@ async def adm_agreement(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "✍ Klienti ka tashmë një marrëveshje në pritje — prit "
             "vendimin e tij para se të dërgosh tjetër.")
         return
-    projects = store.list_projects(uid)
-    proj = projects[-1] if projects else None
-    lang_c = store.get_lang(uid)
-    title = (proj or {}).get("title") or t(lang_c,
-                                           "agreement_subject_default")
-    agr = store.create_agreement(uid, (proj or {}).get("id"), title)
-    if agr is None:  # garë e rrallë: sapo u krijua një tjetër
+    status, title = await _send_agreement(context, uid)
+    if status == "pending":  # garë e rrallë: sapo u krijua një tjetër
         await update.message.reply_text(
             "✍ Klienti ka tashmë një marrëveshje në pritje.")
         return
-    kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton(t(lang_c, "agreement_accept"),
-                             callback_data="agr:accept"),
-        InlineKeyboardButton(t(lang_c, "agreement_decline"),
-                             callback_data="agr:decline"),
-    ]])
-    text = (t(lang_c, "agreement_intro", title=title) + "\n\n"
-            + t(lang_c, "agreement_terms"))
-    try:
-        await context.bot.send_message(uid, text, parse_mode="HTML",
-                                       reply_markup=kb)
-    except Exception as e:
-        log.warning("marrëveshja s'u dërgua te %s: %s", uid, e)
+    if status == "failed":
         await update.message.reply_text(
             "⚠️ Marrëveshja u regjistrua, por dërgimi te klienti "
             "dështoi (ndoshta s'e ka hapur botin).")
@@ -1984,6 +2133,101 @@ async def agreement_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🕒 Pranuar më: {decided_local}")
 
 
+def _brief_admin_kb(brief_id: str, with_project: bool = True):
+    """Butonat një-prekje të adminit mbi njoftimin e brief-it
+    (paketa 4): krijo projektin / dërgo marrëveshjen / përgjigju."""
+    top = []
+    if with_project:
+        top.append(InlineKeyboardButton(
+            "🚧 Krijo projektin", callback_data=f"brief:proj:{brief_id}"))
+    top.append(InlineKeyboardButton(
+        "✍ Dërgo marrëveshjen", callback_data=f"brief:agr:{brief_id}"))
+    return InlineKeyboardMarkup([
+        top,
+        [InlineKeyboardButton(
+            "💬 Përgjigju", callback_data=f"brief:reply:{brief_id}")],
+    ])
+
+
+def _brief_project_title(brief: dict) -> str:
+    """Titulli i projektit nga brief-i: përshkrimi i klientit është
+    'emri' praktik i projektit (pastrohet + shkurtohet); pa
+    përshkrim përdoret etiketa e shërbimit."""
+    desc = " ".join((brief.get("desc") or "").split())
+    if desc:
+        return desc[:70].rstrip() + ("…" if len(desc) > 70 else "")
+    return brief.get("service") or "Projekt"
+
+
+async def brief_action_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Paketa 4: veprimet një-prekje të adminit mbi njoftimin e
+    brief-it (brief:proj:<id> / brief:agr:<id> / brief:reply:<id>).
+    Vetëm admini; 'proj' është idempotent (brief.project_id)."""
+    q = update.callback_query
+    if not is_admin(q.from_user):
+        await q.answer("Vetëm admini.", show_alert=True)
+        return
+    parts = (q.data or "").split(":")
+    if len(parts) != 3:
+        return
+    _, action, bid = parts
+    brief = store.get_brief(bid)
+    if not brief:
+        await q.answer("Brief-i nuk u gjet.", show_alert=True)
+        return
+    uid = brief["client_id"]
+    crec = store.get_client_any(uid) or {}
+    cname = brief.get("name") or crec.get("name") or "klientit"
+    if action == "reply":
+        # e njëjta gjendje si /pergjigju <id>: mesazhi tjetër i
+        # adminit i shkon këtij klienti
+        await q.answer()
+        context.user_data["reply_to"] = uid
+        await q.message.reply_text(
+            f"✍️ Po i përgjigjesh <b>{cname}</b> (id {uid}).\n"
+            "Mesazhi yt i radhës — tekst ose media — i dërgohet "
+            "atij direkt. /anulo për anulim.", parse_mode="HTML")
+        return
+    if action == "agr":
+        status, title = await _send_agreement(context, uid)
+        if status == "sent":
+            await q.answer(f"✍ Marrëveshja iu dërgua klientit — «{title}»")
+        elif status == "pending":
+            await q.answer(
+                "✍ Klienti ka tashmë një marrëveshje në pritje.",
+                show_alert=True)
+        elif status == "no_client":
+            await q.answer("Klienti nuk u gjet më te regjistri.",
+                           show_alert=True)
+        else:
+            await q.answer("⚠️ Dërgimi te klienti dështoi.",
+                           show_alert=True)
+        return
+    # action == "proj"
+    if brief.get("project_id"):
+        await q.answer("🚧 Projekti i këtij brief-i është krijuar tashmë.")
+        return
+    await q.answer()
+    title = _brief_project_title(brief)
+    rec = store.create_project(uid, title)
+    store.set_brief_project(bid, rec["id"])
+    clang = store.get_lang(uid)
+    try:
+        await context.bot.send_message(
+            uid, t(clang, "project_started") + "\n\n"
+            + project_view_text(rec, clang), parse_mode="HTML")
+    except Exception as e:
+        log.warning("njoftimi i nisjes së projektit s'u dërgua: %s", e)
+    try:
+        await q.edit_message_text(
+            (q.message.text or "")
+            + f"\n\n✅ <b>Projekti u krijua</b> — «{title}»",
+            parse_mode="HTML",
+            reply_markup=_brief_admin_kb(bid, with_project=False))
+    except Exception:
+        pass
+
+
 async def brief_finish(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     lang = ulang(user)
@@ -1993,6 +2237,10 @@ async def brief_finish(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop("brief", None)
         context.user_data.pop("flow", None)
         return
+    # paketa 4: brief-i ruhet si regjistër me id — admini vepron
+    # mbi njoftimin me butonat një-prekje (brief_action_cb)
+    brief = store.create_brief(user.id, user.first_name or "",
+                               user.username or "", d)
     await notify_admin(
         context,
         "🚀 <b>BRIEF I RI PROJEKTI</b>\n"
@@ -2003,7 +2251,8 @@ async def brief_finish(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"⏰ Afati: {d.get('deadline', '—')}\n"
         f"📞 Kontakti: {d.get('contact', '—')}\n\n"
         f"💡 <b>Gjurmim:</b> për ta ndjekur projektin te klienti, kopjo: "
-        f"<code>/projekt {user.id} Titulli i projektit</code>")
+        f"<code>/projekt {user.id} Titulli i projektit</code>",
+        markup=_brief_admin_kb(brief["id"]))
     # F4: propozimi paraprak PDF për adminin + klientin (në heshtje
     # nëse gjenerimi dështon — rrjedha e brief-it s'prishet kurrë)
     try:
@@ -2363,9 +2612,15 @@ async def booking_menu_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
     user = update.effective_user
     lang = ulang(user)
-    if store.pending_booking_for(user.id):
+    pend = store.pending_booking_for(user.id)
+    if pend:
+        # paketa 4: edhe nga këtu, klienti mund ta anulojë vetë
+        # kërkesën në pritje me një prekje
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+            t(lang, "book_cancel_btn"),
+            callback_data=f"book:cancel:{pend['id']}")]])
         await update.effective_message.reply_text(
-            t(lang, "book_pending"), parse_mode="HTML")
+            t(lang, "book_pending"), parse_mode="HTML", reply_markup=kb)
         return
     context.user_data["flow"] = {"kind": "booking", "step": "service"}
     context.user_data["booking"] = {}
@@ -2448,9 +2703,48 @@ async def book_slot_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"💼 Shërbimi: {SERVICE_NAMES.get(booking['service_key'], booking['service_key'])}\n"
         f"🗓 Orari: <b>{fmt_slot(parse_iso(slot['dt_iso']))}</b>",
         markup=kb)
-    await q.message.reply_text(t(lang, "book_sent"), parse_mode="HTML")
+    # paketa 4: klienti mund ta anulojë vetë kërkesën në pritje
+    cancel_kb = InlineKeyboardMarkup([[InlineKeyboardButton(
+        t(lang, "book_cancel_btn"),
+        callback_data=f"book:cancel:{rec['id']}")]])
+    await q.message.reply_text(t(lang, "book_sent"), parse_mode="HTML",
+                               reply_markup=cancel_kb)
     context.user_data.pop("flow", None)
     context.user_data.pop("booking", None)
+
+
+async def booking_cancel_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Paketa 4 (3c): klienti anulon vetë kërkesën e tij të konsultës
+    në pritje (book:cancel:<id>). Rezervimi 'pending' s'e ka konsumuar
+    orarin — konsumimi ndodh vetëm në miratim — prandaj anulimi
+    thjesht e shënon 'cancelled' dhe njofton adminin. Vendimet e
+    marra tashmë dhe rezervimet e të tjerëve nuk preken."""
+    q = update.callback_query
+    user = q.from_user
+    lang = ulang(user)
+    bid = (q.data or "").rsplit(":", 1)[-1]
+    b = store.get_booking(bid)
+    if (not b or b.get("client_id") != user.id
+            or b.get("status") != "pending"):
+        await q.answer(t(lang, "book_cancel_done"), show_alert=True)
+        return
+    await q.answer()
+    store.set_booking_status(bid, "cancelled")
+    try:
+        await q.edit_message_text(t(lang, "book_cancelled"),
+                                  parse_mode="HTML")
+    except Exception:
+        pass
+    slot = store.get_slot(b["slot_id"])
+    slot_dt = parse_iso(slot["dt_iso"]) if slot else None
+    client = store.get_client_any(user.id) or {}
+    await notify_admin(
+        context,
+        "🗓 <b>Rezervimi u anulua nga klienti</b>\n"
+        f"👤 {client.get('name') or user.first_name or ''} "
+        f"(@{user.username or '—'}, id {user.id})\n"
+        f"💼 Shërbimi: {SERVICE_NAMES.get(b['service_key'], b['service_key'])}\n"
+        f"🗓 Orari: <b>{fmt_slot(slot_dt) if slot_dt else '—'}</b>")
 
 
 # ---------------------------------------------------------------- F2: kalendari (ICS + Google)
@@ -2797,6 +3091,180 @@ def plan_digest(at: datetime = None):
              "text": build_digest_text(week_label, counters, at)}]
 
 
+# ================================================================
+# Paketa 4 — ROJA E LINKEVE (kontroll javor, hesht kur gjithçka
+# punon) dhe KUJTESA E MËNGJESIT për pikat në pritje > 24 orë.
+# Të dyja planifikohen nga _reminder_loop, si kujtesat e tjera.
+# ================================================================
+LINK_CHECK_EVERY_DAYS = 7
+_LINK_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/126.0 Safari/537.36")
+
+
+def collect_link_urls():
+    """URL-t që kontrollon roja: WORKS + WORKS_EN të dedupliluara
+    (rendi i parë që shfaqen) + WEBAPP_URL."""
+    seen, out = set(), []
+    for table in (WORKS, WORKS_EN):
+        for items in table.values():
+            for _label, url in items:
+                if url and url not in seen:
+                    seen.add(url)
+                    out.append(url)
+    if WEBAPP_URL not in seen:
+        out.append(WEBAPP_URL)
+    return out
+
+
+def plan_link_check(at: datetime = None) -> bool:
+    """Planifikues i pastër: True (dhe e shënon datën në settings)
+    nëse kontrolli javor është i duhuri — s'është bërë kurrë ose
+    kanë kaluar >= 7 ditë (data lokale e Tiranës) nga i fundit."""
+    at = at or datetime.now(timezone.utc)
+    today = at.astimezone(TIRANA).date()
+    last_d = None
+    last = store.get_setting("last_link_check")
+    if last:
+        try:
+            last_d = datetime.strptime(str(last), "%Y-%m-%d").date()
+        except ValueError:
+            last_d = None
+    if last_d is not None and (today - last_d).days < LINK_CHECK_EVERY_DAYS:
+        return False
+    store.set_setting("last_link_check", today.isoformat())
+    return True
+
+
+def _fetch_url_status(url: str) -> int:
+    """Fetcher-i real i rojës: GET me redirect-e, timeout ~15s dhe
+    UA normale browseri. Kthen kodin final HTTP (4xx/5xx vijnë nga
+    HTTPError); gabimet e rrjetit ngrihen si përjashtime."""
+    req = urllib.request.Request(url, headers={"User-Agent": _LINK_UA})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return int(resp.getcode() or 200)
+    except urllib.error.HTTPError as e:
+        return int(e.code)
+
+
+def plan_link_actions(at: datetime = None, fetcher=None):
+    """Kontrolli javor i linkeve (kur është i duhuri): çdo URL
+    provohet deri në 2 herë — 2xx/3xx = OK, >= 400 = i vdekur,
+    përjashtim pas riprovave = 'nuk u verifikua' (raportohet
+    veçmas). Probleme → NJË veprim për adminin; përndryshe []."""
+    at = at or datetime.now(timezone.utc)
+    if not plan_link_check(at):
+        return []
+    fetcher = fetcher or _fetch_url_status
+    dead, unverified = [], []
+    for url in collect_link_urls():
+        status, err = None, None
+        for _attempt in (1, 2):
+            try:
+                status = fetcher(url)
+                err = None
+                break
+            except Exception as e:  # rrjet i paarritshëm, DNS, timeout
+                err = e
+        if err is not None:
+            unverified.append((url, type(err).__name__))
+        elif status is not None and 200 <= int(status) < 400:
+            continue  # OK — heshtje
+        else:
+            dead.append((url, status))
+    if not dead and not unverified:
+        return []
+    lines = ["🔗 <b>Roja e linkeve</b> — kontrolli javor gjeti "
+             "probleme:\n"]
+    if dead:
+        lines.append("❌ <b>Linke të vdekura:</b>")
+        lines += [f"• {u} — HTTP {s}" for u, s in dead]
+    if unverified:
+        lines.append("\n❓ <b>Nuk u verifikuan</b> (problem rrjeti — "
+                     "provohen sërish kontrollin tjetër):")
+        lines += [f"• {u} — nuk u verifikua ({e})"
+                  for u, e in unverified]
+    return [{"kind": "link_watchdog", "chat_id": ADMIN_ID,
+             "text": "\n".join(lines)}]
+
+
+PENDING_OLD_AFTER = timedelta(hours=24)
+_PENDING_KIND_LABELS = (
+    ("requests", "Kërkesa shërbimi", "kërkesë shërbimi"),
+    ("bookings", "Kërkesa konsulte", "kërkesë konsulte"),
+    ("agreements", "Marrëveshje në pritje", "marrëveshje"),
+    ("briefs", "Brief-e pa projekt", "brief projekti"),
+)
+
+
+def collect_pending_old(at: datetime = None):
+    """Pikat në pritje më të vjetra se 24 orë: kërkesat e shërbimit,
+    rezervimet dhe marrëveshjet 'pending' + brief-et pa projekt.
+    Kthen {'counts': {kind: n}, 'oldest': (label, dt) | None}."""
+    at = at or datetime.now(timezone.utc)
+    cutoff = at - PENDING_OLD_AFTER
+    items = []  # (created_dt, kind)
+    for r in store.list_requests(status="pending"):
+        dt = parse_iso(r.get("created_at"))
+        if dt and dt <= cutoff:
+            items.append((dt, "requests"))
+    for b in store.list_bookings().values():
+        if b.get("status") != "pending":
+            continue
+        dt = parse_iso(b.get("created_at"))
+        if dt and dt <= cutoff:
+            items.append((dt, "bookings"))
+    for a in store.list_agreements(status="pending"):
+        dt = parse_iso(a.get("sent_at"))
+        if dt and dt <= cutoff:
+            items.append((dt, "agreements"))
+    for br in store.list_briefs():
+        if br.get("project_id"):
+            continue
+        dt = parse_iso(br.get("created_at"))
+        if dt and dt <= cutoff:
+            items.append((dt, "briefs"))
+    counts = {}
+    for _dt, kind in items:
+        counts[kind] = counts.get(kind, 0) + 1
+    oldest = None
+    if items:
+        dt, kind = min(items, key=lambda x: x[0])
+        label = {k: lo for k, _pl, lo in _PENDING_KIND_LABELS}[kind]
+        oldest = (label, dt)
+    return {"counts": counts, "oldest": oldest}
+
+
+def plan_pending_digest(at: datetime = None):
+    """Kujtesa e mëngjesit për pikat në pritje > 24 orë: pas orës
+    nëntë (ora e Tiranës), një herë në ditë, VETËM nëse ka pika —
+    përndryshe heshtje totale. Flamuri vendoset kur dërgohet."""
+    at = at or datetime.now(timezone.utc)
+    local = at.astimezone(TIRANA)
+    if local.hour < 9:
+        return []
+    today = local.date().isoformat()
+    if store.get_setting("last_pending_digest") == today:
+        return []
+    found = collect_pending_old(at)
+    counts = found["counts"]
+    if not counts:
+        return []
+    store.set_setting("last_pending_digest", today)
+    lines = ["🔔 <b>Kujtesë: pika në pritje prej më shumë se "
+             "një dite</b>\n"]
+    for kind, plural, _single in _PENDING_KIND_LABELS:
+        if counts.get(kind):
+            lines.append(f"• {plural}: <b>{counts[kind]}</b>")
+    if found["oldest"]:
+        label, dt = found["oldest"]
+        days = max(1, (at - dt).days)
+        lines.append(f"\n⏰ Më e vjetra: {label} · {days} ditë")
+    return [{"kind": "pending_digest", "chat_id": ADMIN_ID,
+             "text": "\n".join(lines)}]
+
+
 async def adm_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """F6: /raport — raporti i javës rrjedhëse, sipas kërkesës."""
     if not is_admin(update.effective_user):
@@ -2808,6 +3276,25 @@ async def adm_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML")
 
 
+async def _link_watchdog_run(app):
+    """Paketa 4: roja e linkeve si detyrë MË VETE në sfond —
+    kontrolli bëhet në thread (rrjeti mund të jetë i ngadaltë)
+    dhe njoftimi i adminit (vetëm nëse ka probleme) dërgohet pa
+    vonuar asnjëherë kujtesat e tjera të loop-it."""
+    try:
+        acts = await asyncio.to_thread(plan_link_actions,
+                                       datetime.now(timezone.utc))
+    except Exception as e:
+        log.warning("roja e linkeve dështoi: %s", e)
+        return
+    for act in acts:
+        try:
+            await app.bot.send_message(act["chat_id"], act["text"],
+                                       parse_mode="HTML")
+        except Exception as e:
+            log.warning("roja e linkeve: dërgimi dështoi: %s", e)
+
+
 async def _reminder_loop(app):
     """Detyra në sfond: çdo ~30 min dërgon kujtesat e planifikuara.
     Gabimet kapen gjithmonë — loop-i s'rrëzon kurrë aplikacionin."""
@@ -2815,6 +3302,7 @@ async def _reminder_loop(app):
         try:
             acts = plan_reminders(datetime.now(timezone.utc))
             acts += plan_digest(datetime.now(timezone.utc))
+            acts += plan_pending_digest(datetime.now(timezone.utc))
             for act in acts:
                 try:
                     await app.bot.send_message(
@@ -2822,6 +3310,8 @@ async def _reminder_loop(app):
                 except Exception as e:
                     log.warning("kujtesa (%s) s'u dërgua: %s",
                                 act.get("kind"), e)
+            # paketa 4: roja javore e linkeve — detyrë më vete
+            asyncio.create_task(_link_watchdog_run(app))
         except Exception as e:
             log.warning("reminder loop gabim: %s", e)
         await asyncio.sleep(1800)
@@ -3103,6 +3593,21 @@ async def fallback_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if action == "lang":
         await show_lang_chooser(update, context)
         return
+    if action == "home":
+        # paketa 4: 🏠 Kreu — rreshti i parë i tastierës "Më shumë";
+        # kthen te faqja kryesore me tastierën kryesore nga kudo
+        if not has_access(user):
+            await show_lock(update, context, t(lang, "lock_note_private"))
+            return
+        await show_home(update, context)
+        return
+    if action == "guide":
+        # paketa 4: 🧭 Udhëzuesi — rinis turin, edhe pas përfundimit
+        if not has_access(user):
+            await show_lock(update, context, t(lang, "lock_note_private"))
+            return
+        await start_tour(context, user.id, lang)
+        return
     if action in ("more", "back_home"):
         # paketa 3 (F4): ndërrimi kryesore <-> "Më shumë"
         if not has_access(user):
@@ -3201,6 +3706,154 @@ async def adm_clients(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append(f"• {r.get('name') or ''} (@{r.get('username') or '—'}, id <code>{uid}</code>) — "
                      f"{r.get('service') or '—'} · {st}")
     await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
+
+# ---------------------------------------------------------------- paketa 4: dosja e klientit + shënimet private
+AGR_STATUS_LABELS = {"pending": "në pritje", "accepted": "e pranuar",
+                     "declined": "e refuzuar"}
+
+
+def build_dossier_text(uid: int):
+    """Dosja e klientit në NJË mesazh (vetëm admin): identiteti,
+    gjuha, aksesi + skadimi, burimi (kod/kërkesë + shënimi),
+    projektet me fazat, rezervimet (e radhës + në pritje),
+    marrëveshja e fundit, vlerësimet, numri i brief-eve, data e
+    aktivizimit dhe shënimet e fundit private të adminit.
+    Kthen None nëse klienti s'ekziston."""
+    rec = store.get_client_any(uid)
+    if not rec:
+        return None
+    now = datetime.now(timezone.utc)
+    lang = rec.get("lang") or store.get_lang(uid)
+    lines = [
+        "🗂 <b>DOSJA E KLIENTIT</b>",
+        f"👤 {rec.get('name') or '—'} (@{rec.get('username') or '—'}, "
+        f"id <code>{uid}</code>)",
+        f"🌍 Gjuha: {'English' if lang == 'en' else 'Shqip'}",
+    ]
+    exp = parse_iso(rec.get("expires_at"))
+    if rec.get("revoked"):
+        access = "🚫 i revokuar"
+    elif exp and exp <= now:
+        access = f"⌛ i skaduar më {fmt_date(rec.get('expires_at'))}"
+    else:
+        access = f"✅ aktiv deri më {fmt_date(rec.get('expires_at'))}"
+    lines.append(f"🔐 Aksesi: {access}")
+    via = rec.get("via")
+    if via == "code":
+        note = ""
+        for _h, c in store.list_codes():
+            if c.get("bound_user_id") == uid:
+                note = c.get("note") or ""
+                break
+        src = "kod personal" + (f" · shënimi i kodit: {note}" if note
+                                 else "")
+    elif via == "approval":
+        src = "kërkesë shërbimi e miratuar"
+        if rec.get("service"):
+            src += f" · shërbimi: {rec['service']}"
+    else:
+        src = via or "—"
+    lines.append(f"🧾 Burimi: {src}")
+    lines.append(f"📅 U aktivizua më: {fmt_date(rec.get('activated_at'))}")
+    # projektet me fazën aktuale
+    lines.append("\n🚧 <b>Projektet:</b>")
+    projects = store.list_projects(uid)
+    if projects:
+        for p in projects:
+            stage = PROJECT_STAGES[max(0, min(
+                len(PROJECT_STAGES) - 1, int(p.get("stage") or 0)))]
+            mark = "✅ i përfunduar" if p.get("done") else stage
+            lines.append(f"• {p.get('title') or 'Projekt'} — {mark}")
+    else:
+        lines.append("• asnjë")
+    # rezervimet: konsulta e radhës e miratuar + numri në pritje
+    mine = [b for b in store.list_bookings().values()
+            if b.get("client_id") == uid]
+    pend_b = [b for b in mine if b.get("status") == "pending"]
+    upcoming = []
+    for b in mine:
+        if b.get("status") != "approved":
+            continue
+        slot = store.get_slot(b["slot_id"])
+        dt = parse_iso(slot["dt_iso"]) if slot else None
+        if dt and dt > now:
+            upcoming.append((dt, b))
+    upcoming.sort(key=lambda x: x[0])
+    lines.append("\n🗓 <b>Rezervimet:</b>")
+    if upcoming:
+        dt, b = upcoming[0]
+        lines.append(
+            f"• Konsulta e radhës: <b>{fmt_slot(dt)}</b> "
+            f"({SERVICE_NAMES.get(b['service_key'], b['service_key'])})")
+    else:
+        lines.append("• asnjë konsultë e miratuar në të ardhmen")
+    lines.append(f"• Në pritje: {len(pend_b)}")
+    # marrëveshja më e fundit
+    lines.append("\n✍ <b>Marrëveshja:</b>")
+    agr = store.latest_agreement_for(uid)
+    if agr:
+        st = AGR_STATUS_LABELS.get(agr.get("status"),
+                                   agr.get("status") or "—")
+        when = agr.get("decided_at") or agr.get("sent_at")
+        lines.append(f"• «{agr.get('title') or '—'}» — {st} · "
+                     f"{fmt_date(when)}")
+    else:
+        lines.append("• asnjë")
+    # vlerësimet: numri + yjet e fundit (vetëm simbole për klientin;
+    # dosja është zonë admini)
+    revs = [r for r in store.list_reviews() if r.get("client_id") == uid]
+    lines.append("\n⭐ <b>Vlerësimet:</b>")
+    if revs:
+        stars = "⭐" * int(revs[0].get("stars") or 0)
+        lines.append(f"• gjithsej {len(revs)} · i fundit: {stars}")
+    else:
+        lines.append("• asnjë")
+    lines.append(f"\n🚀 <b>Brief-e projektesh:</b> "
+                 f"{len(store.list_briefs(uid))}")
+    # shënimet private të adminit — vetëm 3 të fundit, me data
+    notes = store.client_notes(uid)
+    if notes:
+        lines.append("\n🗒 <b>Shënimet e tua private (më të fundit):</b>")
+        for n in notes[-3:]:
+            lines.append(f"• {fmt_date(n.get('ts'))} — "
+                         f"{n.get('text') or ''}")
+    return "\n".join(lines)
+
+
+async def adm_dossier(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Paketa 4: /dosja <user_id> — dosja e plotë e klientit."""
+    if not is_admin(update.effective_user):
+        return
+    uid, _ = _parse_uid_arg(context)
+    if uid is None:
+        await update.message.reply_text("Përdorimi: /dosja <user_id>")
+        return
+    text = build_dossier_text(uid)
+    if text is None:
+        await update.message.reply_text("Ky user_id nuk u gjet te klientët.")
+        return
+    await update.message.reply_text(text, parse_mode="HTML")
+
+
+async def adm_client_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Paketa 4: /shenim_klienti <user_id> <teksti> — shënim privat
+    i adminit te regjistri i klientit (shfaqet vetëm te /dosja)."""
+    if not is_admin(update.effective_user):
+        return
+    uid, rest = _parse_uid_arg(context)
+    if uid is None or not rest:
+        await update.message.reply_text(
+            "Përdorimi: /shenim_klienti <user_id> <teksti i shënimit>")
+        return
+    note = store.add_client_note(uid, " ".join(rest))
+    if note is None:
+        await update.message.reply_text("Ky user_id nuk u gjet te klientët.")
+        return
+    rec = store.get_client_any(uid) or {}
+    await update.message.reply_text(
+        f"🗒 Shënimi u shtua te dosja e <b>{rec.get('name') or 'klientit'}</b> "
+        f"(id {uid}) — e sheh te /dosja.", parse_mode="HTML")
 
 
 async def adm_backup(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3399,6 +4052,8 @@ def build_app():
     app.add_handler(CommandHandler("marreveshje", adm_agreement))   # paketa 3
     app.add_handler(CommandHandler("orari", adm_work_hours))        # paketa 3
     app.add_handler(CommandHandler("orari_fundjave", adm_work_weekend))
+    app.add_handler(CommandHandler("dosja", adm_dossier))           # paketa 4
+    app.add_handler(CommandHandler("shenim_klienti", adm_client_note))
     # callback-et (secili me prefiksin e vet, pa konflikte)
     app.add_handler(CallbackQueryHandler(lang_cb, pattern=r"^lang:(sq|en)$"))
     app.add_handler(CallbackQueryHandler(gate_code_cb, pattern=r"^gate:code$"))
@@ -3420,6 +4075,11 @@ def build_app():
     app.add_handler(CallbackQueryHandler(book_slot_cb, pattern=r"^bookslot:"))
     app.add_handler(CallbackQueryHandler(booking_decision_cb, pattern=r"^bookadm:(ok|no):[0-9a-f]+$"))
     app.add_handler(CallbackQueryHandler(agreement_cb, pattern=r"^agr:(accept|decline)$"))
+    # paketa 4: anulimi i rezervimit nga klienti, veprimet një-prekje
+    # mbi brief-in dhe hapat e turit udhëzues
+    app.add_handler(CallbackQueryHandler(booking_cancel_cb, pattern=r"^book:cancel:[0-9a-f]+$"))
+    app.add_handler(CallbackQueryHandler(brief_action_cb, pattern=r"^brief:(proj|agr|reply):[0-9a-f]+$"))
+    app.add_handler(CallbackQueryHandler(tour_cb, pattern=r"^tour:"))
     # i gjithë teksti kalon nga dispatch-i qendror (rrjedha/menu/relay/kyçje)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, fallback_text))
     # mediat (foto/zë/dokumente...) kalojnë nga dispatch-i mediatik (F6)
