@@ -76,6 +76,7 @@ Sekretet VETËM nga ambienti / .env (kurë në kod):
   ENCLIENT_DATA     — rruga e data.json (opsionale)
 """
 import asyncio
+import html
 import io
 import logging
 import os
@@ -148,6 +149,35 @@ DATA_PATH = os.environ.get("ENCLIENT_DATA", os.path.join(BASE, "data.json"))
 store = Store(DATA_PATH)
 
 DEFAULT_DAYS = 30
+
+
+# ---------------------------------------------------------------- auditi 360°
+def _esc(s) -> str:
+    """Shpëtim HTML për përmbajtjen e kontrolluar nga përdoruesi që
+    futet në mesazhe parse_mode='HTML' (emra, përshkrime, tituj...).
+    Pa këtë, një '<3' ose '<b>' i klientit e rrëzonte dërgimin me
+    BadRequest ose injektonte formatim (D19)."""
+    if s is None:
+        return ""
+    return html.escape(str(s), quote=False)
+
+
+def _safe_int(v, default: int = 0) -> int:
+    """int() i sigurt: vlera të korruptuara ('five', '²', vargje me
+    mijëra shifra) kthejnë default-in në vend që të rrëzojnë pamjen
+    (D8/D11)."""
+    try:
+        return int(v)
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def _trunc(s, n: int) -> str:
+    """Shkurton tekstin e gjatë të përdoruesit për njoftimet e adminit,
+    që mesazhi të mos kalojë kufirin 4096 të Telegramit dhe të mos
+    humbasë bashkë me butonat e veprimit (D12)."""
+    s = str(s or "")
+    return s[:n].rstrip() + "…" if len(s) > n else s
 
 SERVICES = [
     ("web", "🌐 Faqe interneti & e-commerce"),
@@ -905,12 +935,12 @@ def reviews_text(lang: str = "sq") -> str:
         header, play = REVIEWS_HEADER, REVIEWS_PLAY
     parts = [header]
     for r in store.list_reviews(status="approved")[:5]:
-        entry = "⭐" * int(r.get("stars") or 5)
+        entry = "⭐" * max(0, min(5, _safe_int(r.get("stars"), 5)))
         if r.get("text"):
-            entry += "\n" + r["text"]
+            entry += "\n" + _esc(r["text"])
         first = (r.get("name") or "").split()[0] if r.get("name") else ""
         if first:
-            entry += f"\n<i>— {first}</i>"
+            entry += f"\n<i>— {_esc(first)}</i>"
         parts.append(entry)
     parts.append(play)
     return "\n\n".join(parts)
@@ -967,7 +997,7 @@ async def show_lock(update: Update, context: ContextTypes.DEFAULT_TYPE, note: st
 async def show_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     lang = ulang(user)
-    name = (user.first_name or "klient").strip()
+    name = _esc((user.first_name or "klient").strip())
     msg = update.effective_message
     await msg.reply_text(
         t(lang, "welcome", name=name, status=store.get_status()),
@@ -1219,17 +1249,50 @@ async def tour_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ---------------------------------------------------------------- /start
+# Payload-et e rrjedhës nga Mini Web App-i (addendum): fjalët e
+# veprimit kontrollohen PARA kodit dhe trajtohen si kod VETËM kur
+# payload-i ka formatin e saktë të kodit (EN + 8 shenja të alfabetit).
+FLOW_PAYLOADS = ("brief", "book", "talk", "works", "services")
+_CODE_FORMAT = re.compile(r"EN[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}")
+
+
+async def _start_flow_payload(update: Update,
+                              context: ContextTypes.DEFAULT_TYPE,
+                              payload: str):
+    """Hap rrjedhën përkatëse për klientin aktiv (ose adminin) nga
+    payload-i i deep-link-ut të Web App-it."""
+    if payload == "brief":
+        await brief_menu_start(update, context)
+    elif payload == "book":
+        await booking_menu_start(update, context)
+    elif payload == "talk":
+        await talk_start(update, context)
+    elif payload == "works":
+        await show_works(update, context)
+    elif payload == "services":
+        await show_services(update, context)
+
+
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     context.user_data.pop("talk", None)
     context.user_data.pop("reply_to", None)
     context.user_data.pop("flow", None)
+    payload = ((context.args[0] if context.args else "") or "").strip()
+    low = payload.lower()
+    if low in FLOW_PAYLOADS:
+        # Fjalë rrjedhe, JO kod: për vizitorin shfaqet vetëm kyçja dhe
+        # tentativat e kodit NUK preken; për klientin hapet rrjedha.
+        if has_access(user):
+            await _start_flow_payload(update, context, low)
+        else:
+            await show_lock(update, context)
+        return
     # Deep-link nga bio/DM: t.me/<bot>?start=EN-XXXX-XXXX → zhbllokim direkt
-    if context.args and not has_access(user):
-        code = (context.args[0] or "").strip()
-        if normalize_code(code).startswith("EN"):
-            await try_redeem(update, context, code)
-            return
+    if payload and not has_access(user) \
+            and _CODE_FORMAT.fullmatch(normalize_code(payload)):
+        await try_redeem(update, context, payload)
+        return
     if has_access(user):
         await show_home(update, context)
     else:
@@ -1269,8 +1332,8 @@ async def try_redeem(update: Update, context: ContextTypes.DEFAULT_TYPE, code: s
             parse_mode="HTML")
         await notify_admin(context,
                            f"🔓 <b>Klient i ri u zhbllokua me kod</b>\n"
-                           f"👤 {user.first_name or ''} (@{user.username or '—'}, id {user.id})\n"
-                           f"📝 Shënimi i kodit: {rec.get('note') or '—'}")
+                           f"👤 {_esc(user.first_name)} (@{_esc(user.username) or '—'}, id {user.id})\n"
+                           f"📝 Shënimi i kodit: {_esc(rec.get('note')) or '—'}")
         await show_home(update, context)
         await send_welcome_voice(context, user.id)  # F5
         await _maybe_start_tour(context, user.id)  # paketa 4: turi
@@ -1283,7 +1346,7 @@ async def _gate_fail(update: Update, context: ContextTypes.DEFAULT_TYPE, status:
     arsyeja e saktë ruhet dhe i raportohet vetëm adminit."""
     user = update.effective_user
     lang = ulang(user)
-    who = f"{user.first_name or ''} (@{user.username or '—'}, id {user.id})"
+    who = f"{_esc(user.first_name)} (@{_esc(user.username) or '—'}, id {user.id})"
     locked = store.register_fail(user.id, status=status)
     await update.effective_message.reply_text(t(lang, "gate_fail"), parse_mode="HTML")
     if status == "bound_other":
@@ -1413,10 +1476,10 @@ async def req_finish(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await notify_admin(
         context,
         "📩 <b>KËRKESË E RE PËR SHËRBIM</b>\n"
-        f"👤 {d.get('name') or user.first_name or ''} (@{user.username or '—'}, id {user.id})\n"
-        f"💼 Shërbimi: {d.get('service', '—')}\n"
-        f"📝 Nevoja: {d.get('desc', '—')}\n"
-        f"📞 Kontakti: {d.get('contact') or '—'}",
+        f"👤 {_esc(d.get('name') or user.first_name)} (@{_esc(user.username) or '—'}, id {user.id})\n"
+        f"💼 Shërbimi: {_esc(d.get('service')) or '—'}\n"
+        f"📝 Nevoja: {_esc(_trunc(d.get('desc'), 900)) or '—'}\n"
+        f"📞 Kontakti: {_esc(d.get('contact')) or '—'}",
         markup=kb)
     await update.effective_message.reply_text(
         t(lang, "req_sent"), parse_mode="HTML")
@@ -1430,7 +1493,11 @@ async def admin_decision_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(q.from_user):
         await q.answer("Vetëm admini.", show_alert=True)
         return
-    _, action, req_id = q.data.split(":", 2)
+    parts = (q.data or "").split(":", 2)
+    if len(parts) != 3 or parts[1] not in ("ok", "no") or not parts[2]:
+        await q.answer("Të dhëna të pavlefshme.", show_alert=True)
+        return
+    _, action, req_id = parts
     req = store.get_request(req_id)
     if not req or req["status"] != "pending":
         await q.answer("Kërkesa është trajtuar tashmë.")
@@ -1467,7 +1534,7 @@ async def admin_decision_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             req["user_id"],
             t(clang, "approved_welcome", date=fmt_date(client['expires_at']))
             + t(clang, "welcome",
-                name=(req["name"] or "klient").split()[0],
+                name=_esc((req["name"] or "klient").split()[0]),
                 status=store.get_status()),
             parse_mode="HTML", reply_markup=client_kb(clang))
         await send_welcome_voice(context, req["user_id"])  # F5
@@ -1508,9 +1575,17 @@ async def service_detail_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await q.answer()
     sid = q.data.split(":", 1)[1]
+    details = svc_details(sid, lang)
+    if not details:
+        # id shërbimi i panjohur (buton i vjetër/i modifikuar): teksti
+        # bosh do ta rrëzonte dërgimin — ri-pyet me listën e shërbimeve
+        await q.message.reply_text(
+            t(lang, "services_header"), parse_mode="HTML",
+            reply_markup=service_kb("det", lang))
+        return
     kb = InlineKeyboardMarkup([[InlineKeyboardButton(
         t(lang, "service_start_btn"), callback_data="cli:brief")]])
-    await q.message.reply_text(svc_details(sid, lang), parse_mode="HTML",
+    await q.message.reply_text(details, parse_mode="HTML",
                                reply_markup=kb)
 
 
@@ -1685,11 +1760,11 @@ async def show_access(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not rec:
         await show_lock(update, context)
         return
-    exp = parse_iso(rec["expires_at"])
+    exp = parse_iso(rec.get("expires_at"))
     days = max(0, (exp - datetime.now(timezone.utc)).days) if exp else "—"
     await update.effective_message.reply_text(
-        t(lang, "access_text", date=fmt_date(rec["expires_at"]), days=days,
-          service=rec.get("service") or "—"),
+        t(lang, "access_text", date=fmt_date(rec.get("expires_at")),
+          days=days, service=_esc(rec.get("service")) or "—"),
         parse_mode="HTML")
 
 
@@ -1727,6 +1802,10 @@ async def brief_menu_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def brief_service_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
+    lang = ulang(q.from_user)
+    if not has_access(q.from_user):
+        await q.answer(t(lang, "locked_alert"), show_alert=True)
+        return
     await q.answer()
     flow = context.user_data.get("flow") or {}
     if flow.get("kind") != "brief":
@@ -1776,12 +1855,20 @@ async def brief_text_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def brief_budget_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
+    lang = ulang(q.from_user)
+    if not has_access(q.from_user):
+        # aksesi mund të ketë skaduar/revokuar në mes të brief-it —
+        # butoni stale merr alert-in e kyçjes, jo vazhdimin e rrjedhës
+        await q.answer(t(lang, "locked_alert"), show_alert=True)
+        return
     await q.answer()
     flow = context.user_data.get("flow") or {}
     if flow.get("kind") != "brief":
         return
-    idx = int(q.data.split(":", 1)[1])
-    lang = ulang(q.from_user)
+    try:
+        idx = int(q.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        return
     budgets = budgets_for(lang)
     if not (0 <= idx < len(budgets)):
         idx = 0
@@ -2052,11 +2139,11 @@ async def _send_agreement(context: ContextTypes.DEFAULT_TYPE, uid: int):
         return "pending", title
     kb = InlineKeyboardMarkup([[
         InlineKeyboardButton(t(lang_c, "agreement_accept"),
-                             callback_data="agr:accept"),
+                             callback_data=f"agr:accept:{agr['id']}"),
         InlineKeyboardButton(t(lang_c, "agreement_decline"),
-                             callback_data="agr:decline"),
+                             callback_data=f"agr:decline:{agr['id']}"),
     ]])
-    text = (t(lang_c, "agreement_intro", title=title) + "\n\n"
+    text = (t(lang_c, "agreement_intro", title=_esc(title)) + "\n\n"
             + t(lang_c, "agreement_terms"))
     try:
         await context.bot.send_message(uid, text, parse_mode="HTML",
@@ -2099,24 +2186,39 @@ async def adm_agreement(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "dështoi (ndoshta s'e ka hapur botin).")
         return
     await update.message.reply_text(
-        f"✍ Marrëveshja iu dërgua <b>{rec.get('name') or 'klientit'}</b> "
-        f"(id {uid}) për «{title}». Do të njoftohesh kur të vendosë.",
+        f"✍ Marrëveshja iu dërgua <b>{_esc(rec.get('name')) or 'klientit'}</b> "
+        f"(id {uid}) për «{_esc(title)}». Do të njoftohesh kur të vendosë.",
         parse_mode="HTML")
 
 
 async def agreement_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Vendimi i klientit mbi marrëveshjen (agr:accept / agr:decline).
-    Vetëm klienti i adresuar ka një marrëveshje në pritje nën emrin
-    e tij — të tjerët marrin shënimin 'e vendosur tashmë'."""
+    """Vendimi i klientit mbi marrëveshjen (agr:accept[:<id>] /
+    agr:decline[:<id>]). Butonat e rinj mbajnë id-në e marrëveshjes:
+    një buton STALE (i mesazhit të vjetër) s'mund të vendosë një
+    marrëveshje më të re në pritje (auditi 360°, D6). Formati legacy
+    pa id (mesazhet e dërguara para rregullimit) vendos ende
+    marrëveshjen në pritje. Vetëm klienti i adresuar vendos."""
     q = update.callback_query
     user = q.from_user
     lang = ulang(user)
-    agr = store.pending_agreement_for(user.id)
-    if not agr:
-        await q.answer(t(lang, "agreement_done"), show_alert=True)
+    if not has_access(user):
+        await q.answer(t(lang, "locked_alert"), show_alert=True)
         return
+    parts = (q.data or "").split(":")
+    action = parts[1] if len(parts) > 1 else ""
+    aid = parts[2] if len(parts) > 2 else None
+    if aid:
+        agr = store.get_agreement(aid)
+        if not agr or agr.get("client_id") != user.id \
+                or agr.get("status") != "pending":
+            await q.answer(t(lang, "agreement_done"), show_alert=True)
+            return
+    else:
+        agr = store.pending_agreement_for(user.id)
+        if not agr:
+            await q.answer(t(lang, "agreement_done"), show_alert=True)
+            return
     await q.answer()
-    action = (q.data or "").split(":", 1)[1] if ":" in (q.data or "") else ""
     rec = store.get_client_any(user.id) or {}
     client_name = rec.get("name") or user.first_name or ""
     if action == "decline":
@@ -2126,8 +2228,8 @@ async def agreement_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await notify_admin(
             context,
             f"✍ <b>Marrëveshja u refuzua</b>\n\n"
-            f"👤 {client_name} (@{user.username or '—'}, id {user.id})\n"
-            f"📄 Objekti: «{agr.get('title') or '—'}»")
+            f"👤 {_esc(client_name)} (@{_esc(user.username) or '—'}, id {user.id})\n"
+            f"📄 Objekti: «{_esc(agr.get('title')) or '—'}»")
         return
     updated = store.set_agreement_status(agr["id"], "accepted")
     decided_dt = parse_iso((updated or {}).get("decided_at"))
@@ -2153,8 +2255,8 @@ async def agreement_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await notify_admin(
         context,
         f"✍ <b>Marrëveshja u pranua</b>\n\n"
-        f"👤 {client_name} (@{user.username or '—'}, id {user.id})\n"
-        f"📄 Objekti: «{agr.get('title') or '—'}»\n"
+        f"👤 {_esc(client_name)} (@{_esc(user.username) or '—'}, id {user.id})\n"
+        f"📄 Objekti: «{_esc(agr.get('title')) or '—'}»\n"
         f"🕒 Pranuar më: {decided_local}")
 
 
@@ -2194,6 +2296,7 @@ async def brief_action_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     parts = (q.data or "").split(":")
     if len(parts) != 3:
+        await q.answer("Të dhëna të pavlefshme.", show_alert=True)
         return
     _, action, bid = parts
     brief = store.get_brief(bid)
@@ -2209,7 +2312,7 @@ async def brief_action_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.answer()
         context.user_data["reply_to"] = uid
         await q.message.reply_text(
-            f"✍️ Po i përgjigjesh <b>{cname}</b> (id {uid}).\n"
+            f"✍️ Po i përgjigjesh <b>{_esc(cname)}</b> (id {uid}).\n"
             "Mesazhi yt i radhës — tekst ose media — i dërgohet "
             "atij direkt. /anulo për anulim.", parse_mode="HTML")
         return
@@ -2246,7 +2349,7 @@ async def brief_action_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await q.edit_message_text(
             (q.message.text or "")
-            + f"\n\n✅ <b>Projekti u krijua</b> — «{title}»",
+            + f"\n\n✅ <b>Projekti u krijua</b> — «{_esc(title)}»",
             parse_mode="HTML",
             reply_markup=_brief_admin_kb(bid, with_project=False))
     except Exception:
@@ -2269,12 +2372,12 @@ async def brief_finish(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await notify_admin(
         context,
         "🚀 <b>BRIEF I RI PROJEKTI</b>\n"
-        f"👤 {user.first_name or ''} (@{user.username or '—'}, id {user.id})\n"
-        f"💼 Lloji: {d.get('service', '—')}\n"
-        f"📝 Përshkrimi: {d.get('desc', '—')}\n"
-        f"💰 Buxheti: {d.get('budget', '—')}\n"
-        f"⏰ Afati: {d.get('deadline', '—')}\n"
-        f"📞 Kontakti: {d.get('contact', '—')}\n\n"
+        f"👤 {_esc(user.first_name)} (@{_esc(user.username) or '—'}, id {user.id})\n"
+        f"💼 Lloji: {_esc(d.get('service')) or '—'}\n"
+        f"📝 Përshkrimi: {_esc(_trunc(d.get('desc'), 900)) or '—'}\n"
+        f"💰 Buxheti: {_esc(d.get('budget')) or '—'}\n"
+        f"⏰ Afati: {_esc(_trunc(d.get('deadline'), 200)) or '—'}\n"
+        f"📞 Kontakti: {_esc(_trunc(d.get('contact'), 200)) or '—'}\n\n"
         f"💡 <b>Gjurmim:</b> për ta ndjekur projektin te klienti, kopjo: "
         f"<code>/projekt {user.id} Titulli i projektit</code>",
         markup=_brief_admin_kb(brief["id"]))
@@ -2309,10 +2412,10 @@ def project_view_text(rec, lang: str = "sq") -> str:
     progresit VETËM me simbole (✅/🔄/⚪ dhe ▰/▱) — kurrë përqindje
     apo numra fazash (urdhri 'mos vendos shifra'). Etiketat e fazave
     përkthehen sipas gjuhës; titulli/shënimi janë përmbajtje admini."""
-    stage = int(rec.get("stage") or 0)
-    done = bool(rec.get("done"))
     stages = stages_for(lang)
-    lines = [f"🚧 <b>{rec.get('title') or 'Projekt'}</b>"]
+    stage = max(0, min(len(stages) - 1, _safe_int(rec.get("stage"), 0)))
+    done = bool(rec.get("done"))
+    lines = [f"🚧 <b>{_esc(rec.get('title')) or 'Projekt'}</b>"]
     for i, label in enumerate(stages):
         if done or i < stage:
             mark = "✅"
@@ -2324,7 +2427,7 @@ def project_view_text(rec, lang: str = "sq") -> str:
     filled = len(stages) if done else stage + 1
     lines.append("▰" * filled + "▱" * (len(stages) - filled))
     if rec.get("note"):
-        lines.append(f"📝 <i>{rec['note']}</i>")
+        lines.append(f"📝 <i>{_esc(rec['note'])}</i>")
     lines.append(t(lang, "project_updated",
                    date=fmt_date(rec.get('updated_at'))))
     return "\n".join(lines)
@@ -2350,10 +2453,16 @@ async def show_projects(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "\n\n".join(parts), parse_mode="HTML")
 
 
+_UID_ARG = re.compile(r"-?[0-9]{1,18}")
+
+
 def _parse_uid_arg(context):
-    """user_id nga args[0] (ose None nëse formati është gabim)."""
+    """user_id nga args[0] (ose None nëse formati është gabim).
+    Regex ASCII strikte: '.isdigit()' pranon edhe shifra Unicode
+    ('²') që int() pastaj i rrëzon, dhe vargjet me mijëra shifra e
+    kalojnë kufirin e int()-it — të dyja jepnin traceback (D8)."""
     args = context.args or []
-    if not args or not args[0].lstrip("-").isdigit():
+    if not args or not _UID_ARG.fullmatch(args[0] or ""):
         return None, []
     return int(args[0]), args[1:]
 
@@ -2461,7 +2570,7 @@ async def adm_project_finish(update: Update, context: ContextTypes.DEFAULT_TYPE)
     try:
         await context.bot.send_message(
             uid, t(clang, "project_finish",
-                   title=rec.get("title") or "Projekt"),
+                   title=_esc(rec.get("title")) or "Projekt"),
             parse_mode="HTML")
     except Exception as e:
         log.warning("njoftimi i përfundimit s'u dërgua: %s", e)
@@ -2477,14 +2586,14 @@ def _review_admin_kb(rid: str):
 
 
 def _review_admin_text(rec, project_title: str = "") -> str:
-    stars = "⭐" * int(rec.get("stars") or 0)
+    stars = "⭐" * max(0, min(5, _safe_int(rec.get("stars"), 0)))
     lines = ["⭐ <b>VLERËSIM I RI</b>",
-             f"👤 {rec.get('name') or '—'} (id {rec.get('client_id')})"]
+             f"👤 {_esc(rec.get('name')) or '—'} (id {rec.get('client_id')})"]
     if project_title:
-        lines.append(f"🚧 Projekti: {project_title}")
+        lines.append(f"🚧 Projekti: {_esc(project_title)}")
     lines.append(stars)
     if rec.get("text"):
-        lines.append(f"💬 {rec['text']}")
+        lines.append(f"💬 {_esc(rec['text'])}")
     return "\n".join(lines)
 
 
@@ -2507,7 +2616,8 @@ async def ask_review(context: ContextTypes.DEFAULT_TYPE, uid: int, project: dict
     ])
     try:
         await context.bot.send_message(
-            uid, t(lang, "review_ask", title=project.get("title") or "Projekt"),
+            uid, t(lang, "review_ask",
+                   title=_esc(project.get("title")) or "Projekt"),
             parse_mode="HTML", reply_markup=kb)
     except Exception as e:
         log.warning("ftesa për vlerësim s'u dërgua: %s", e)
@@ -2524,7 +2634,13 @@ async def review_stars_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     parts = (q.data or "").split(":")  # rev:s:<pid>:<n>
     if len(parts) != 4:
         return
-    pid, n = parts[2], int(parts[3])
+    try:
+        n = int(parts[3])
+    except ValueError:
+        return  # numër yjesh i shtrembëruar — pa rrjedhë, pa crash (D1)
+    if not (1 <= n <= 5):
+        return  # jashtë diapazonit 1–5 — refuzohet në heshtje pas answer-it
+    pid = parts[2]
     proj = store.get_project(pid)
     if not proj or int(proj.get("client_id") or 0) != q.from_user.id:
         return
@@ -2541,16 +2657,22 @@ async def review_stars_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def review_skip_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Kapërcimi te hapi i yjeve: asnjë vlerësim s'krijohet."""
     q = update.callback_query
-    await q.answer()
     lang = ulang(q.from_user)
     if not has_access(q.from_user):
+        await q.answer(t(lang, "locked_alert"), show_alert=True)
         return
+    await q.answer()
     await q.message.reply_text(t(lang, "review_skipped"))
 
 
 async def review_tskip_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Kapërcimi i komentit: vlerësimi ruhet vetëm me yjet."""
     q = update.callback_query
+    lang = ulang(q.from_user)
+    if not has_access(q.from_user):
+        await q.answer(t(lang, "locked_alert"), show_alert=True)
+        context.user_data.pop("flow", None)
+        return
     await q.answer()
     flow = context.user_data.get("flow") or {}
     if flow.get("kind") != "review":
@@ -2579,7 +2701,7 @@ async def _finalize_review(update, context, flow: dict, text: str):
     if rec_client and rec_client.get("name"):
         client_name = rec_client["name"]
     rec, created = store.create_review(
-        user.id, client_name, pid, int(flow.get("stars") or 5), text)
+        user.id, client_name, pid, _safe_int(flow.get("stars"), 5), text)
     if created:
         await notify_admin(
             context, _review_admin_text(rec, proj.get("title") or ""),
@@ -2590,18 +2712,26 @@ async def _finalize_review(update, context, flow: dict, text: str):
 
 async def review_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Vendimi i adminit mbi vlerësimin (publiko/refuzo) — vetëm
-    admini; për të tjerët heshtje totale."""
+    admini; jo-admini merr alert (jo heshtje), veprimi i panjohur
+    s'ndryshon asgjë dhe vendimi i marrë s'kthehet nga klikimi stale
+    (auditi 360°, D2)."""
     q = update.callback_query
     if not is_admin(q.from_user):
+        await q.answer("Vetëm admini.", show_alert=True)
         return
-    await q.answer()
     parts = (q.data or "").split(":")  # revadm:ok|no:<rid>
-    if len(parts) != 3:
+    if len(parts) != 3 or parts[1] not in ("ok", "no"):
+        await q.answer("Veprim i panjohur.", show_alert=True)
         return
     action, rid = parts[1], parts[2]
     rec = store.get_review(rid)
     if not rec:
+        await q.answer("Vlerësimi nuk u gjet.", show_alert=True)
         return
+    if rec.get("status") != "pending":
+        await q.answer("Vlerësimi është vendosur tashmë.")
+        return
+    await q.answer()
     store.set_review_status(rid, "approved" if action == "ok" else "rejected")
     verdict = ("✅ <b>U PUBLIKUA</b> — shfaqet te ⭐ Vlerësimet."
                if action == "ok" else "❌ <b>U REFUZUA</b> — s'shfaqet.")
@@ -2703,7 +2833,12 @@ async def book_slot_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.message.reply_text(t(lang, "book_pending"), parse_mode="HTML")
         return
     slot = store.get_slot(slot_id)
-    if slot is None or slot.get("booked_by") is not None:
+    slot_dt0 = parse_iso(slot["dt_iso"]) if slot else None
+    if slot is None or slot.get("booked_by") is not None \
+            or (slot_dt0 is not None
+                and slot_dt0 <= datetime.now(timezone.utc)):
+        # orari s'ekziston / u rezervua / KA KALUAR tashmë (buton stale
+        # për orar të kaluar — auditi 360°, D7): e njëjta rrugë ri-pyetjeje
         slots = store.open_slots()
         context.user_data.pop("flow", None)
         context.user_data.pop("booking", None)
@@ -2724,7 +2859,7 @@ async def book_slot_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await notify_admin(
         context,
         "🗓 <b>KËRKESË E RE KONSULTE</b>\n"
-        f"👤 {user.first_name or ''} (@{user.username or '—'}, id {user.id})\n"
+        f"👤 {_esc(user.first_name)} (@{_esc(user.username) or '—'}, id {user.id})\n"
         f"💼 Shërbimi: {SERVICE_NAMES.get(booking['service_key'], booking['service_key'])}\n"
         f"🗓 Orari: <b>{fmt_slot(parse_iso(slot['dt_iso']))}</b>",
         markup=kb)
@@ -2790,8 +2925,8 @@ async def booking_cancel_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await notify_admin(
         context,
         "🗓 <b>Rezervimi u anulua nga klienti</b>\n"
-        f"👤 {client.get('name') or user.first_name or ''} "
-        f"(@{user.username or '—'}, id {user.id})\n"
+        f"👤 {_esc(client.get('name') or user.first_name)} "
+        f"(@{_esc(user.username) or '—'}, id {user.id})\n"
         f"💼 Shërbimi: {SERVICE_NAMES.get(b['service_key'], b['service_key'])}\n"
         f"🗓 Orari: <b>{fmt_slot(slot_dt) if slot_dt else '—'}</b>")
 
@@ -2862,7 +2997,11 @@ async def booking_decision_cb(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not is_admin(q.from_user):
         await q.answer("Vetëm admini.", show_alert=True)
         return
-    _, action, bid = q.data.split(":", 2)
+    parts = (q.data or "").split(":", 2)
+    if len(parts) != 3 or parts[1] not in ("ok", "no") or not parts[2]:
+        await q.answer("Të dhëna të pavlefshme.", show_alert=True)
+        return
+    _, action, bid = parts
     b = store.get_booking(bid)
     if not b or b["status"] != "pending":
         await q.answer("Rezervimi është trajtuar tashmë.")
@@ -2897,7 +3036,14 @@ async def booking_decision_cb(update: Update, context: ContextTypes.DEFAULT_TYPE
         except Exception as e:
             log.warning("refuzimi i konsultës s'u dërgua: %s", e)
         return
-    store.set_booking_status(bid, "approved")
+    if not store.set_booking_status(bid, "approved"):
+        # roja atomike e store-it (D13): orari u zë ndërkohë nga një
+        # rezervim tjetër — konflikti i raportohet adminit, klienti
+        # s'merr konfirmim të rremë
+        await q.message.reply_text(
+            "⚠️ Ky orar u rezervua ndërkohë nga një rezervim tjetër — "
+            "rezervimi mbetet në pritje.")
+        return
     try:
         await q.edit_message_text(
             q.message.text + "\n\n✅ <b>KONFIRMUAR</b>", parse_mode="HTML")
@@ -2989,7 +3135,7 @@ async def adm_slots(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for s in slots:
         if s.get("booked_by") is not None:
             c = store.get_client_any(s["booked_by"]) or {}
-            st = f"🔒 i rezervuar nga {c.get('name') or s['booked_by']}"
+            st = f"🔒 i rezervuar nga {_esc(c.get('name')) or s['booked_by']}"
         else:
             st = "🟢 i lirë"
         lines.append(
@@ -3041,7 +3187,7 @@ def plan_reminders(at: datetime = None):
         actions.append({
             "kind": "booking_admin", "chat_id": ADMIN_ID,
             "text": REMINDER_BOOKING_ADMIN.format(
-                name=client.get("name") or "", username=client.get("username") or "—",
+                name=_esc(client.get("name")), username=_esc(client.get("username")) or "—",
                 client_id=b["client_id"], service=svc, slot=slot_label)})
         store.set_booking_reminded(bid, True)
     # (b) kujtesa e skadimit të aksesit (brenda 3 ditëve)
@@ -3061,7 +3207,7 @@ def plan_reminders(at: datetime = None):
                       date=fmt_date(rec["expires_at"]))})
         store.mark_expiry_reminded(uid)
         reminded_names.append(
-            f"{rec.get('name') or ''} (@{rec.get('username') or '—'}, id {uid})")
+            f"{_esc(rec.get('name'))} (@{_esc(rec.get('username')) or '—'}, id {uid})")
     if reminded_names:
         actions.append({
             "kind": "expiry_admin_summary", "chat_id": ADMIN_ID,
@@ -3088,7 +3234,7 @@ def build_digest_text(week: str, counters: dict, at: datetime = None) -> str:
             continue
         active += 1
         if exp - at <= EXPIRY_REMIND_WITHIN:
-            expiring.append(rec.get("name") or uid_s)
+            expiring.append(_esc(rec.get("name")) or uid_s)
     pend_req = len(store.list_requests(status="pending"))
     pend_book = len([b for b in store.list_bookings().values()
                      if b.get("status") == "pending"])
@@ -3349,9 +3495,16 @@ async def _reminder_loop(app):
     Gabimet kapen gjithmonë — loop-i s'rrëzon kurrë aplikacionin."""
     while True:
         try:
-            acts = plan_reminders(datetime.now(timezone.utc))
-            acts += plan_digest(datetime.now(timezone.utc))
-            acts += plan_pending_digest(datetime.now(timezone.utc))
+            # çdo planifikues izolohet në try-në e vet (auditi 360°,
+            # D10): dështimi i njërit s'i bllokon të tjerët atë cikël
+            acts = []
+            for planner in (plan_reminders, plan_digest,
+                            plan_pending_digest):
+                try:
+                    acts += planner(datetime.now(timezone.utc))
+                except Exception as e:
+                    log.warning("planifikuesi %s dështoi: %s",
+                                getattr(planner, "__name__", "planner"), e)
             for act in acts:
                 try:
                     await app.bot.send_message(
@@ -3476,7 +3629,7 @@ async def adm_pergjigju(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     context.user_data["reply_to"] = uid
     await update.message.reply_text(
-        f"✍️ Po i përgjigjesh <b>{rec.get('name') or 'klientit'}</b> "
+        f"✍️ Po i përgjigjesh <b>{_esc(rec.get('name')) or 'klientit'}</b> "
         f"(id {uid}).\nMesazhi yt i radhës — tekst ose media — i dërgohet "
         "atij direkt. /anulo për anullim.", parse_mode="HTML")
 
@@ -3557,14 +3710,15 @@ async def media_dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not has_access(user):
         await show_lock(update, context, t(lang, "lock_note_private"))
         return
-    if media_kind(msg) is None:
-        return
     if context.user_data.get("talk"):
+        # talk: ÇDO mesazh jo-tekst përcillet me copy_message — edhe
+        # llojet jashtë MEDIA_ATTRS (dice, poll, venue...) që Telegrami
+        # di t'i kopjojë; caption-i NUK është routing teksti (D15)
         try:
             await context.bot.send_message(
                 ADMIN_ID,
-                f"💬 <b>Mesazh nga klienti</b> {user.first_name or ''} "
-                f"(@{user.username or '—'}, id {user.id}):",
+                f"💬 <b>Mesazh nga klienti</b> {_esc(user.first_name)} "
+                f"(@{_esc(user.username) or '—'}, id {user.id}):",
                 parse_mode="HTML")
             copied = await context.bot.copy_message(
                 ADMIN_ID, from_chat_id=msg.chat_id,
@@ -3575,8 +3729,10 @@ async def media_dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             log.warning("kopjimi i medias së klientit dështoi: %s", e)
             await msg.reply_text(t(lang, "talk_send_fail"))
-    else:
-        await msg.reply_text(t(lang, "talk_media_hint"), parse_mode="HTML")
+        return
+    if media_kind(msg) is None:
+        return  # lloj i panjohur jashtë talk-ut: injorohet (i përcaktuar)
+    await msg.reply_text(t(lang, "talk_media_hint"), parse_mode="HTML")
 
 
 def _exit_client_flow(context: ContextTypes.DEFAULT_TYPE):
@@ -3669,6 +3825,11 @@ async def _client_text_dispatch(update: Update, context: ContextTypes.DEFAULT_TY
     action = MENU_ROUTES.get(text)
     talking = bool(context.user_data.get("talk"))
     in_flow = kind in ("brief", "booking", "review") or talking
+    # --- aksesi skadoi/u revokua NË MES të rrjedhës (D3): rrjedha
+    # pastrohet dhe mesazhi zbarkon në rrugën e kyçjes, jo në rrjedhë
+    if in_flow and not has_access(user):
+        _exit_client_flow(context)
+        return False
     # --- ndërprerja globale: etiketa e menusë mund çdo rrjedhë ---
     if action and in_flow and has_access(user):
         same_flow = ((action == "brief" and kind == "brief")
@@ -3698,11 +3859,23 @@ async def _client_text_dispatch(update: Update, context: ContextTypes.DEFAULT_TY
         return False
     if has_access(user):
         if talking:
-            sent = await context.bot.send_message(
-                ADMIN_ID,
-                f"💬 <b>Mesazh nga klienti</b> {user.first_name or ''} "
-                f"(@{user.username or '—'}, id {user.id}):\n\n{update.message.text or ''}",
-                parse_mode="HTML")
+            # relay i bisedës (D4/D19): trupi shpëton HTML-in, prehet
+            # te kufiri i Telegramit dhe dështimi i dërgimit i kthehet
+            # klientit si mesazh — jo si përjashtim që ikën nga handler-i
+            body = update.message.text or ""
+            if len(body) > 3800:
+                body = body[:3800] + "…"
+            try:
+                sent = await context.bot.send_message(
+                    ADMIN_ID,
+                    f"💬 <b>Mesazh nga klienti</b> {_esc(user.first_name)} "
+                    f"(@{_esc(user.username) or '—'}, id {user.id}):\n\n"
+                    f"{_esc(body)}",
+                    parse_mode="HTML")
+            except Exception as e:
+                log.warning("relay i bisedës dështoi: %s", e)
+                await update.message.reply_text(t(lang, "talk_send_fail"))
+                return True
             store.map_relay(sent.message_id, user.id)
             await update.message.reply_text(t(lang, "talk_sent"))
             await _maybe_after_hours(context, user, lang)
@@ -3760,8 +3933,16 @@ async def adm_create_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
     days, note = DEFAULT_DAYS, ""
     args = context.args or []
     if args:
-        if args[0].isdigit():
-            days = max(1, min(365, int(args[0])))
+        if re.fullmatch(r"-?[0-9]+", args[0] or ""):
+            # numër (edhe negativ/absurd): shtrënguar 1..365 pa int()
+            # mbi vargje gjigante — shenja + gjatësia vendosin skajin
+            digits = args[0].lstrip("-")
+            if args[0].startswith("-") or digits.strip("0") == "":
+                days = 1
+            elif len(digits) > 3:
+                days = 365
+            else:
+                days = max(1, min(365, int(args[0])))
             note = " ".join(args[1:])
         else:
             note = " ".join(args)
@@ -3786,14 +3967,15 @@ async def adm_codes(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("S'ka kode të krijuara ende.")
         return
     lines = ["🔑 <b>Kodet e krijuara</b> (teksti i kodit s'ruhet — shihet vetëm në krijim):\n"]
-    for _, r in sorted(rows, key=lambda x: x[1]["created_at"], reverse=True)[:20]:
+    for _, r in sorted(rows, key=lambda x: x[1].get("created_at") or "",
+                       reverse=True)[:20]:
         if r.get("revoked"):
             st = "🚫 revokuar"
         elif r.get("bound_user_id"):
             st = f"🔓 përdorur nga id {r['bound_user_id']}"
         else:
             st = "🟡 në pritje (i papërdorur)"
-        lines.append(f"• {st} · skadon {fmt_date(r['expires_at'])} · {r.get('note') or '—'}")
+        lines.append(f"• {st} · skadon {fmt_date(r.get('expires_at'))} · {r.get('note') or '—'}")
     await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
 
@@ -3806,9 +3988,9 @@ async def adm_clients(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     lines = ["👥 <b>Klientët</b>:\n"]
     for uid, r in clients.items():
-        st = "🚫 revokuar" if r.get("revoked") else f"✅ deri {fmt_date(r['expires_at'])}"
-        lines.append(f"• {r.get('name') or ''} (@{r.get('username') or '—'}, id <code>{uid}</code>) — "
-                     f"{r.get('service') or '—'} · {st}")
+        st = "🚫 revokuar" if r.get("revoked") else f"✅ deri {fmt_date(r.get('expires_at'))}"
+        lines.append(f"• {_esc(r.get('name'))} (@{_esc(r.get('username')) or '—'}, id <code>{uid}</code>) — "
+                     f"{_esc(r.get('service')) or '—'} · {st}")
     await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
 
@@ -3831,7 +4013,7 @@ def build_dossier_text(uid: int):
     lang = rec.get("lang") or store.get_lang(uid)
     lines = [
         "🗂 <b>DOSJA E KLIENTIT</b>",
-        f"👤 {rec.get('name') or '—'} (@{rec.get('username') or '—'}, "
+        f"👤 {_esc(rec.get('name')) or '—'} (@{_esc(rec.get('username')) or '—'}, "
         f"id <code>{uid}</code>)",
         f"🌍 Gjuha: {'English' if lang == 'en' else 'Shqip'}",
     ]
@@ -3850,12 +4032,12 @@ def build_dossier_text(uid: int):
             if c.get("bound_user_id") == uid:
                 note = c.get("note") or ""
                 break
-        src = "kod personal" + (f" · shënimi i kodit: {note}" if note
+        src = "kod personal" + (f" · shënimi i kodit: {_esc(note)}" if note
                                  else "")
     elif via == "approval":
         src = "kërkesë shërbimi e miratuar"
         if rec.get("service"):
-            src += f" · shërbimi: {rec['service']}"
+            src += f" · shërbimi: {_esc(rec['service'])}"
     else:
         src = via or "—"
     lines.append(f"🧾 Burimi: {src}")
@@ -3866,9 +4048,9 @@ def build_dossier_text(uid: int):
     if projects:
         for p in projects:
             stage = PROJECT_STAGES[max(0, min(
-                len(PROJECT_STAGES) - 1, int(p.get("stage") or 0)))]
+                len(PROJECT_STAGES) - 1, _safe_int(p.get("stage"), 0)))]
             mark = "✅ i përfunduar" if p.get("done") else stage
-            lines.append(f"• {p.get('title') or 'Projekt'} — {mark}")
+            lines.append(f"• {_esc(p.get('title')) or 'Projekt'} — {mark}")
     else:
         lines.append("• asnjë")
     # rezervimet: konsulta e radhës e miratuar + numri në pritje
@@ -3900,7 +4082,7 @@ def build_dossier_text(uid: int):
         st = AGR_STATUS_LABELS.get(agr.get("status"),
                                    agr.get("status") or "—")
         when = agr.get("decided_at") or agr.get("sent_at")
-        lines.append(f"• «{agr.get('title') or '—'}» — {st} · "
+        lines.append(f"• «{_esc(agr.get('title')) or '—'}» — {st} · "
                      f"{fmt_date(when)}")
     else:
         lines.append("• asnjë")
@@ -3909,7 +4091,7 @@ def build_dossier_text(uid: int):
     revs = [r for r in store.list_reviews() if r.get("client_id") == uid]
     lines.append("\n⭐ <b>Vlerësimet:</b>")
     if revs:
-        stars = "⭐" * int(revs[0].get("stars") or 0)
+        stars = "⭐" * max(0, min(5, _safe_int(revs[0].get("stars"), 0)))
         lines.append(f"• gjithsej {len(revs)} · i fundit: {stars}")
     else:
         lines.append("• asnjë")
@@ -3921,7 +4103,7 @@ def build_dossier_text(uid: int):
         lines.append("\n🗒 <b>Shënimet e tua private (më të fundit):</b>")
         for n in notes[-3:]:
             lines.append(f"• {fmt_date(n.get('ts'))} — "
-                         f"{n.get('text') or ''}")
+                         f"{_esc(n.get('text'))}")
     return "\n".join(lines)
 
 
@@ -3956,7 +4138,7 @@ async def adm_client_note(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     rec = store.get_client_any(uid) or {}
     await update.message.reply_text(
-        f"🗒 Shënimi u shtua te dosja e <b>{rec.get('name') or 'klientit'}</b> "
+        f"🗒 Shënimi u shtua te dosja e <b>{_esc(rec.get('name')) or 'klientit'}</b> "
         f"(id {uid}) — e sheh te /dosja.", parse_mode="HTML")
 
 
@@ -4086,10 +4268,10 @@ async def adm_work_weekend(update: Update,
 async def adm_revoke(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user):
         return
-    if not context.args or not context.args[0].lstrip("-").isdigit():
+    uid, _ = _parse_uid_arg(context)
+    if uid is None:
         await update.message.reply_text("Përdorimi: /revoko <user_id> (merr ID-në nga /klientet)")
         return
-    uid = int(context.args[0])
     if store.revoke_client(uid):
         await update.message.reply_text(f"🚫 Aksesi i klientit {uid} u revokua (edhe kodi i tij).")
         try:
@@ -4105,11 +4287,16 @@ async def adm_revoke(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def adm_extend(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user):
         return
-    if not context.args or not context.args[0].lstrip("-").isdigit():
+    uid, rest = _parse_uid_arg(context)
+    days = 30
+    if uid is None or (rest and not _UID_ARG.fullmatch(rest[0] or "")):
         await update.message.reply_text("Përdorimi: /zgjat <user_id> [ditë]")
         return
-    uid = int(context.args[0])
-    days = int(context.args[1]) if len(context.args) > 1 and context.args[1].isdigit() else 30
+    if rest:
+        days = int(rest[0])
+        if days < 1:
+            await update.message.reply_text("Përdorimi: /zgjat <user_id> [ditë]")
+            return
     if store.extend_client(uid, days):
         rec = store.get_client_any(uid)
         await update.message.reply_text(
@@ -4178,7 +4365,7 @@ def build_app():
     app.add_handler(CallbackQueryHandler(book_service_cb, pattern=r"^booksvc:"))
     app.add_handler(CallbackQueryHandler(book_slot_cb, pattern=r"^bookslot:"))
     app.add_handler(CallbackQueryHandler(booking_decision_cb, pattern=r"^bookadm:(ok|no):[0-9a-f]+$"))
-    app.add_handler(CallbackQueryHandler(agreement_cb, pattern=r"^agr:(accept|decline)$"))
+    app.add_handler(CallbackQueryHandler(agreement_cb, pattern=r"^agr:(accept|decline)(:[0-9a-f]+)?$"))
     # paketa 4: anulimi i rezervimit nga klienti, veprimet një-prekje
     # mbi brief-in dhe hapat e turit udhëzues
     app.add_handler(CallbackQueryHandler(booking_cancel_cb, pattern=r"^book:cancel:[0-9a-f]+$"))

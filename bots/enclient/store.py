@@ -147,22 +147,43 @@ class Store:
         self._data = self._load()
 
     # ---------- bazë ----------
+    COLLECTIONS = ("codes", "clients", "requests", "attempts", "relay",
+                   "daily", "settings", "projects", "slots", "bookings",
+                   "reviews", "agreements", "briefs")
+
+    @staticmethod
+    def _empty():
+        return {k: {} for k in Store.COLLECTIONS}
+
+    def _quarantine_corrupt(self):
+        """File-i i të dhënave i korruptuar NUK fshihet dhe NUK
+        mbishkruhet në heshtje: riemërtohet '<path>.corrupt-<kohë>'
+        (përpjekje më e mirë) dhe boti nis me gjendje bosh — rikuperim
+        i përcaktuar, pa crash në import/start (auditi 360°, zona C/J)."""
+        try:
+            stamp = now_utc().strftime("%Y%m%d%H%M%S")
+            os.replace(self.path, f"{self.path}.corrupt-{stamp}")
+        except OSError:
+            pass
+
     def _load(self):
         try:
             with open(self.path, encoding="utf-8") as f:
                 d = json.load(f)
-            if isinstance(d, dict):
-                for k in ("codes", "clients", "requests", "attempts", "relay",
-                          "daily", "settings", "projects", "slots",
-                          "bookings", "reviews", "agreements", "briefs"):
-                    d.setdefault(k, {})
-                return d
+        except FileNotFoundError:
+            return self._empty()  # nisje e parë — s'ka asgjë të korruptuar
         except (OSError, ValueError):
-            pass
-        return {"codes": {}, "clients": {}, "requests": {}, "attempts": {},
-                "relay": {}, "daily": {}, "settings": {}, "projects": {},
-                "slots": {}, "bookings": {}, "reviews": {},
-                "agreements": {}, "briefs": {}}
+            self._quarantine_corrupt()
+            return self._empty()
+        if not isinstance(d, dict):
+            self._quarantine_corrupt()
+            return self._empty()
+        # koleksion me tip të gabuar (legacy/i dëmtuar) → shtrënguar
+        # te {} që metodat të mos rrëzohen më vonë me AttributeError
+        for k in self.COLLECTIONS:
+            if not isinstance(d.get(k), dict):
+                d[k] = {}
+        return d
 
     def _save(self):
         # pastro numëruesit ditorë më të vjetër se 2 ditë (mbahen të lehtë)
@@ -622,7 +643,11 @@ class Store:
             return dict(rec)
 
     def set_stage(self, project_id: str, stage_idx: int, at: datetime = None):
-        idx = max(0, min(len(PROJECT_STAGES) - 1, int(stage_idx)))
+        try:
+            idx = int(stage_idx)
+        except (TypeError, ValueError):
+            idx = 0
+        idx = max(0, min(len(PROJECT_STAGES) - 1, idx))
         return self._update_project(project_id, at=at, stage=idx)
 
     def set_note(self, project_id: str, text: str, at: datetime = None):
@@ -724,6 +749,15 @@ class Store:
             rec = self._data["bookings"].get(booking_id)
             if rec is None:
                 return False
+            # Roja atomike kundër rezervimit të dyfishtë (auditi 360°,
+            # zona C): nëse orari është zënë tashmë nga një rezervim
+            # TJETËR, miratimi refuzohet pa ndryshuar asgjë — kontrolli
+            # në handler s'mjafton (garë mes dy miratimesh paralele).
+            if status == "approved":
+                slot0 = self._data["slots"].get(rec.get("slot_id"))
+                if slot0 is not None and slot0.get("booking_id") \
+                        and slot0.get("booking_id") != booking_id:
+                    return False
             # miratimi numërohet në raportin javor vetëm në kalimin
             # nga 'pending' në 'approved'
             if status == "approved" and rec.get("status") == "pending":
@@ -761,9 +795,13 @@ class Store:
             rid = secrets.token_hex(4)
             while rid in self._data["reviews"]:
                 rid = secrets.token_hex(4)
+            try:
+                stars_i = int(stars)
+            except (TypeError, ValueError):
+                stars_i = 5
             rec = {"id": rid, "client_id": int(client_id),
                    "name": name or "", "project_id": project_id,
-                   "stars": max(1, min(5, int(stars))),
+                   "stars": max(1, min(5, stars_i)),
                    "text": (text or "").strip(),
                    "status": "pending", "created_at": iso(at)}
             self._data["reviews"][rid] = rec
@@ -983,7 +1021,12 @@ class Store:
             if rec is None:
                 return None
             note = {"ts": iso(at), "text": text}
-            rec.setdefault("notes", []).append(note)
+            notes = rec.setdefault("notes", [])
+            notes.append(note)
+            # kapak rritjeje (auditi 360°, zona J): mbahen vetëm 100
+            # shënimet e fundit — dosja shfaq gjithsesi vetëm të fundit
+            if len(notes) > 100:
+                rec["notes"] = notes[-100:]
             self._save()
             return dict(note)
 
