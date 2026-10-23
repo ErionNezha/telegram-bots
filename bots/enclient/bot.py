@@ -1134,13 +1134,12 @@ async def adm_voice_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state = ("✅ <b>Aktiv (zëri yt i regjistruar)</b> — klientët e "
                  "rinj e marrin automatikisht pas aktivizimit.")
     elif has_asset:
-        state = ("✅ <b>Aktiv (zëri Ilir nga paketa)</b> — klientët e "
-                 "rinj marrin zërin e paketës, derisa të regjistrosh "
-                 "zërin tënd.")
+        state = ("✅ <b>Aktiv (zëri yt nga paketa)</b> — klientët e "
+                 "rinj marrin zërin tënd të përfshirë në paketë.")
     else:
         state = "ℹ️ <b>Joaktiv</b> — s'ka mesazh zanor mirëseardhjeje."
-    pkg_line = ("\nZëri i paketës (Ilir) është i përfshirë si "
-                "parazgjedhje." if has_asset else "")
+    pkg_line = ("\nZëri i paketës është zëri yt i regjistruar, "
+                "i përfshirë si parazgjedhje." if has_asset else "")
     context.user_data["capture_voice"] = True
     await update.message.reply_text(
         "🎙 <b>Mesazhi zanor i mirëseardhjes</b>\n\n"
@@ -1159,7 +1158,7 @@ async def adm_voice_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if os.path.isfile(WELCOME_VOICE_PATH):
             await update.message.reply_text(
                 "🎙 Zëri yt u hoq — klientët e rinj tani marrin "
-                "zërin e paketës (Ilir).")
+                "zërin tënd nga paketa.")
         else:
             await update.message.reply_text(
                 "🎙 Mesazhi zanor i mirëseardhjes u hoq — klientët "
