@@ -1,5 +1,5 @@
 # Created by Erion Nezha — © 2026 All rights reserved
-"""Server i vetëm për botët Dertli + Support në Render (një proces, falas).
+"""Server i vetëm për botët Dertli + Support + EnClient në Botkeep (një proces).
 
 Arkitektura (v2, 2026-10-13):
 - NJË proces Python mban botët si Application-e PTB. (v1 kishte
@@ -14,6 +14,33 @@ Arkitektura (v2, 2026-10-13):
   brenda të njëjtit proces.
 - Postimi ditor i "librit të ditës" në kanalin @lexolibra (09:41, Tiranë)
   mbetet thread më vete si më parë (post_channel.py si nënproces i shkurtër).
+
+NDRYSHIMI v3 (2026-10-31, rregullim kundër 503 "application is not
+responding"):
+- Serveri HTTP niset I PARI, para çdo pune me Telegram. Në v2 porta
+  hapej VETËM pasi të dy botët regjistronin webhook-un (deri në 40
+  riprova × 15s); nëse Telegram vonohej në nisje, Botkeep e shihte
+  shërbimin si të vdekur dhe kthente 503.
+- Regjistrimi i webhook-ut riprovohet PA FUND në background dhe NUK e
+  vret më procesin (v2: pas 40 dështimeve ngrinte RuntimeError → procesi
+  binte → ndërprerje derisa Botkeep ta rindezte).
+- Çdo dështim nisjeje i një boti riprovohet pas 30s pa prekur botin tjetër.
+
+NDRYSHIMI v3-merged (2026-11-05, AUDIT ULTRA-DEEP — K1/K3/H2/M1/M3):
+- BASHKIMI me enclient: BOTS ka edhe "enclient" (CLIENT_BOT_TOKEN,
+  kodi nga enclient-bot/deploy/botkeep-pkg/bots/enclient/). Pa këtë,
+  deploy-i i v3-së do ta çaktivizonte @ErionNezhaBot (404 në /wh/enclient).
+- K3: run_bot kap BaseException (modulet ngrenë SystemExit kur mungon
+  token-i; except Exception nuk e kap) — përveç CancelledError që
+  ri-ngrihet për mbyllje të pastër.
+- H2: GET /health kthen JSON me gjendjen reale të READY (boti shënohet
+  "ready" vetëm pas initialize + webhook/polling + start; 200 kur të 3
+  botët janë gati, 503 kur ndonjë është poshtë). GET / mbetet 200
+  gjithmonë (monitorët ekzistues varen nga ai). do_POST kthen 503
+  derisa boti të jetë në READY, që Telegram-i ta riprovojë dërgimin.
+- M3: do_POST ka cap 1 MB për Content-Length (413 mbi cap) + timeout
+  leximi 15s (408 në timeout).
+- M1: requirements.txt me versione të pin-uara + httpx i deklaruar.
 """
 import asyncio
 import http.server
@@ -60,6 +87,8 @@ BASE_URL = (
 # SHËNIM: @lexolibra_bot NUK shërbehet këtu — ai ka shërbimin e vet
 # (lexolibra-bot, wbot.py) me webhook + veçoritë e plota (klubi i leximit).
 # Dy shërbime mbi të njëjtin token luftojnë për webhook/getUpdates.
+# "enclient" është @ErionNezhaBot (portali i klientëve) — token-i
+# CLIENT_BOT_TOKEN; kodi + assets nga enclient-bot/deploy/botkeep-pkg/.
 BOTS = [
     ("dertli", os.path.join(BASE, "bots", "dertli", "bot.py")),
     ("support", os.path.join(BASE, "bots", "support", "bot.py")),
@@ -67,6 +96,11 @@ BOTS = [
 ]
 ROUTES = {f"/wh/{name}": name for name, _ in BOTS}
 APPS = {}
+# H2: READY përmban vetëm botët që kanë përfunduar plotësisht nisjen
+# (initialize + regjistrim webhook/polling + start). APPS vendoset PARA
+# initialize() — një bot në dritaren e initialize() nuk është gati, dhe
+# /health + do_POST duhet ta raportojnë si "down"/503, jo "ready"/200.
+READY = set()
 LOOP = None
 
 # Postimi ditor i "librit të ditës" në kanalin @lexolibra (ora e Tiranës).
@@ -148,38 +182,77 @@ def load_app(name, path):
     return mod.build_app()
 
 
+MAX_BODY = 1_048_576  # M3: cap 1 MB për body-n e webhook-ut (Telegram dërgon < 64 KB)
+
+
 class Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
-    def _respond(self, code, body=b""):
+    def _respond(self, code, body=b"", content_type="text/plain"):
         self.send_response(code)
-        self.send_header("Content-Type", "text/plain")
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         if body:
             self.wfile.write(body)
 
     def do_GET(self):
+        path = self.path.split("?", 1)[0]
+        if path == "/health":
+            # H2: readiness real — vetëm botët në READY (nisje e plotë:
+            # initialize + webhook/polling + start), jo thjesht në APPS.
+            bots = {name: ("ready" if name in READY else "down")
+                    for name, _ in BOTS}
+            ok = all(v == "ready" for v in bots.values())
+            body = json.dumps(
+                {"status": "ok" if ok else "degraded", "bots": bots},
+                sort_keys=True).encode("utf-8")
+            self._respond(200 if ok else 503, body, "application/json")
+            return
         self._respond(200, b"ok - telegram bots running")
 
     def do_POST(self):
         name = ROUTES.get(self.path.split("?", 1)[0])
         if name is None:
-            self._respond(404)
+            self.close_connection = True  # body e palexuar — mos e
+            self._respond(404)            # interpreto si request tjetër
             return
         if not SECRET or \
                 self.headers.get("X-Telegram-Bot-Api-Secret-Token") != SECRET:
+            self.close_connection = True
             self._respond(403)
             return
-        app = APPS.get(name)
-        if app is None or LOOP is None:
-            self._respond(503)
-            return
+        # M3: cap-i kontrollohet PARA READY — edhe me botin poshtë,
+        # një body >1 MB kthehet 413 pa u lexuar kurrë në memorie.
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
             length = 0
-        raw = self.rfile.read(length) if length > 0 else b""
+        if length < 0:
+            length = 0
+        if length > MAX_BODY:
+            self.close_connection = True
+            self._respond(413)
+            return
+        app = APPS.get(name)
+        if app is None or name not in READY or LOOP is None:
+            # Boti s'ka përfunduar nisjen: Telegram-i riprovon dërgimin
+            # (në vend që update-i të pranohej me 200 dhe të mbetej
+            # i papërpunuar në queue-n e një app-i të pa-startuar).
+            self.close_connection = True
+            self._respond(503)
+            return
+        try:
+            self.connection.settimeout(15)  # M3: timeout leximi
+            raw = self.rfile.read(length) if length > 0 else b""
+        except (OSError, ValueError):
+            self._respond(408)
+            return
+        finally:
+            try:
+                self.connection.settimeout(None)
+            except OSError:
+                pass
         try:
             update = Update.de_json(json.loads(raw.decode("utf-8")), app.bot)
         except Exception:
@@ -195,39 +268,78 @@ class Handler(http.server.BaseHTTPRequestHandler):
         pass
 
 
+async def register_webhook_forever(app, name):
+    """Regjistrimi i webhook-ut riprovohet PA FUND dhe NUK e vret procesin.
+
+    Në v2, pas 40 dështimeve ngrihej RuntimeError → procesi binte dhe
+    shërbimi kthehej 503 derisa Botkeep ta rindezte. Tani: derisa të
+    regjistrohet, boti thjesht nuk merr update-e; serveri HTTP përgjigjet
+    normalisht gjatë gjithë kohës.
+    """
+    url = f"{BASE_URL}/wh/{name}"
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            await app.bot.set_webhook(
+                url=url, secret_token=SECRET,
+                allowed_updates=Update.ALL_TYPES)
+            print(f"[server] webhook u regjistrua për '{name}': {url}",
+                  flush=True)
+            return
+        except Exception as e:
+            print(f"[server] set_webhook '{name}' dështoi "
+                  f"(ripova {attempt}): {e}", flush=True)
+            await asyncio.sleep(15)
+
+
+async def run_bot(name, path):
+    """Nis një bot; çdo dështim riprovohet pas 30s pa prekur botin tjetër
+    dhe pa e vrarë procesin."""
+    while True:
+        try:
+            app = load_app(name, path)
+            APPS[name] = app
+            await app.initialize()
+            if SECRET:
+                await register_webhook_forever(app, name)
+            else:
+                await app.updater.start_polling(poll_interval=2.0)
+                print(f"[server] '{name}' në polling (pa WEBHOOK_SECRET)",
+                      flush=True)
+            await app.start()
+            READY.add(name)
+            print(f"[server] boti '{name}' gati", flush=True)
+            return
+        except asyncio.CancelledError:
+            APPS.pop(name, None)
+            READY.discard(name)
+            raise
+        except BaseException as e:
+            # K3: modulet ngrenë SystemExit kur mungon token-i
+            # (dertli bot.py:229, support bot.py:227, enclient bot.py:4310);
+            # except Exception nuk e kap SystemExit-in → task-i vdiste
+            # heshturazi dhe HTTP mbetej 200. Tani riprovohet pas 30s.
+            APPS.pop(name, None)
+            READY.discard(name)
+            print(f"[server] boti '{name}' dështoi në nisje: "
+                  f"{type(e).__name__}: {e} (riprovohet pas 30s)", flush=True)
+            await asyncio.sleep(30)
+
+
 async def amain():
     global LOOP
     LOOP = asyncio.get_running_loop()
-    for name, path in BOTS:
-        app = load_app(name, path)
-        APPS[name] = app
-        await app.initialize()
-        if SECRET:
-            url = f"{BASE_URL}/wh/{name}"
-            for attempt in range(40):
-                try:
-                    await app.bot.set_webhook(
-                        url=url, secret_token=SECRET,
-                        allowed_updates=Update.ALL_TYPES)
-                    print(f"[server] webhook u regjistrua për '{name}': {url}",
-                          flush=True)
-                    break
-                except Exception as e:
-                    print(f"[server] set_webhook '{name}' dështoi "
-                          f"({attempt + 1}/40): {e}", flush=True)
-                    await asyncio.sleep(15)
-            else:
-                raise RuntimeError(f"set_webhook dështoi për '{name}'")
-        else:
-            await app.updater.start_polling(poll_interval=2.0)
-            print(f"[server] '{name}' në polling (pa WEBHOOK_SECRET)",
-                  flush=True)
-        await app.start()
-        print(f"[server] boti '{name}' gati", flush=True)
+    # v3: serveri HTTP niset I PARI, para çdo pune me Telegram. Kështu porta
+    # e caktuar (SERVER_PORT) përgjigjet menjëherë, edhe nëse regjistrimi
+    # i webhook-ut vonohet ose dështon — Botkeep nuk e sheh më shërbimin
+    # si "not responding".
     port = int(os.environ.get("PORT") or os.environ.get("SERVER_PORT") or "10000")
     srv = http.server.ThreadingHTTPServer(("0.0.0.0", port), Handler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     print(f"[server] HTTP server në portin {port}", flush=True)
+    for name, path in BOTS:
+        asyncio.create_task(run_bot(name, path))
     await asyncio.Event().wait()
 
 
