@@ -1,8 +1,10 @@
 <!-- Created by Erion Nezha — © 2026 All rights reserved -->
 # Botët Telegram në Render (falas)
 
-Një Web Service i vetëm falas mban ndezur të 3 botët:
-**@lexolibra_bot**, **@dertlii_bot**, **@lexolibra_help_bot**.
+Një Web Service i vetëm mban ndezur të 3 botët:
+**@dertlii_bot**, **@lexolibra_help_bot**, **@ErionNezhaBot** (portali i klientëve).
+
+@lexolibra_bot NUK shërbehet këtu — ai ka shërbimin e vet (lexolibra-bot, wbot.py).
 
 ## Si funksionon
 
@@ -21,9 +23,12 @@ Një Web Service i vetëm falas mban ndezur të 3 botët:
    Build Command `pip install -r requirements.txt` dhe Start Command
    `python supervisor.py`, plani **Free**.)
 3. Te **Environment**, plotëso:
-   - `TELEGRAM_TOKEN` → tokeni i @lexolibra_bot
+   - `TELEGRAM_TOKEN` → tokeni i @lexolibra_bot (postimi ditor në kanal)
    - `DERTLI_TG_TOKEN` → tokeni i @dertlii_bot
    - `SUPPORT_BOT_TOKEN` → tokeni i @lexolibra_help_bot
+   - `CLIENT_BOT_TOKEN` → tokeni i @ErionNezhaBot (portali i klientëve)
+   - `WEBHOOK_SECRET` → sekreti i përbashkët i webhook-eve
+   - `PUBLIC_BASE_URL` → URL-ja publike e shërbimit (p.sh. Botkeep)
    - `ADMIN_ID` → `1318275745` (gati e plotësuar)
 4. **Deploy** — pas ~2 minutash log-u tregon "ndezja e botit" për të 3.
 5. Testo në Telegram: `/start` te secili bot.
