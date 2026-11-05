@@ -14,5 +14,9 @@ services:
         sync: false
       - key: SUPPORT_BOT_TOKEN
         sync: false
+      - key: CLIENT_BOT_TOKEN
+        sync: false
+      - key: WEBHOOK_SECRET
+        sync: false
       - key: ADMIN_ID
         value: "1318275745"
